@@ -1,0 +1,155 @@
+#page_main {
+    position: relative;
+
+    left: 0;
+    margin-left: $sidebar_open_width;
+
+    transition: left 0.4s ease, margin-left 0.4s ease;
+
+    @include breakpoint(medium) {
+        margin-left: 0;
+    }
+
+    code{white-space: pre;}
+    q { quotes: "“" "”" "‘" "’"; }
+
+    > .inner {
+        background: rgb(255, 255, 255);
+        color: _palette(bg-alt);
+
+        strong, b {
+            color: #000;
+        }
+
+        #audio_table {
+            table {
+                background: _palette(bg);
+                color: rgb(255, 255, 255);
+            }
+
+            audio {
+                width: 100%;
+            }
+        }
+
+        a {
+            @include vendor('transition', (
+                'color #{_duration(transition)} ease',
+                'border-bottom-color #{_duration(transition)} ease'
+            ));
+
+            border-bottom: dotted 1px _palette(bg);
+            color: inherit;
+            text-decoration: none;
+
+            &:hover {
+                border-bottom-color: transparent;
+                color: _palette(accent1);
+            }
+        }
+
+        h1, h2, h3, h4, h5, h6 {
+            color: _palette(bg);
+            &:after {
+                height: 0;
+            }
+            &.major {
+                margin: 0;
+            }
+        }
+
+        table {
+            tr {
+                &:nth-child(odd) {
+                    background-color: rgba(_palette(accent1), 0.25);
+                }
+
+                border: none;
+            }
+
+            td {
+                vertical-align: middle;
+            }
+
+            thead {
+                background: _palette(bg-alt);
+                border: none;
+                th {
+                    padding: 0.75em;
+                    color: rgb(255, 255, 255);
+                }
+                //border-bottom: solid (_size(border-width) * 2) _palette(bg);
+            }
+
+            tfoot {
+                //border-top: solid (_size(border-width) * 2) _palette(bg);
+            }
+        }
+
+        blockquote {
+            border-left: solid (_size(border-width) * 4) _palette(accent1);
+        }
+
+        figure {
+            margin: 0 0 2em 0;
+            padding: 1em;
+            border: solid 1px lighten(#5e42a6, 20);
+			border-radius: 0.25em;
+
+            figcaption {
+                text-align: center;
+            }
+        }
+
+        img {
+            display: block;
+            margin: 0 auto;
+            max-width: 80%;
+            height: auto;
+        }
+
+        code {
+            background-color: lighten(#5e42a6, 45);
+            border: solid 1px lighten(#5e42a6, 20);
+			padding: 0.05em 0.05em;
+        }
+
+        pre {
+            code {
+                padding: 1em;
+            }
+        }
+
+        #TOC {
+            display: block;
+            background-color: lighten(#5e42a6, 45);
+            border: solid 1px lighten(#5e42a6, 20);
+			border-radius: 0.25em;
+            float: right;
+            margin: 0 0 0 1em;
+            padding: 1em 1em 1em 0;
+            position: relative;
+            z-index: 10;
+
+            ul {
+                list-style: none;
+                margin: 0;
+            }
+        }
+
+        @include padding(5em, 5em);
+        max-width: 60em;
+
+        @include breakpoint(small) {
+            @include padding(2em, 2em);
+        }
+    }
+
+    #refs {
+        $hanging-indent: 4em;
+
+        font-size: 80%;
+        padding-left: $hanging-indent;
+        text-indent: -$hanging-indent;
+    }
+}

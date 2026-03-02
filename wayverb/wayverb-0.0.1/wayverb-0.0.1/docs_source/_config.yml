@@ -1,0 +1,48 @@
+title: Wayverb
+email: reuben.thomas@me.com
+description: >
+    Wayverb does realistic, fast acoustic simulations.
+    It's useful for creating beautiful custom reverbs for your compositions, or
+    for checking the acoustics of architecture, without actually building
+    anything!
+    It's also free and open source.
+baseurl: "/wayverb"
+
+# Plugins
+gems:
+    - jekyll-pandoc
+
+# Build settings
+markdown: Pandoc
+
+pandoc:
+    extensions:
+        - smart
+        - mathjax
+        - csl: ieee-with-url.csl
+        - bibliography: wayverb.bib
+        - metadata: "link-citations:true"
+        - toc
+        - standalone
+        - template: template.html
+        - default-image-extension: svg
+
+exclude:
+    - LICENSE.txt
+    - readme.txt
+    - todo.md
+    - makefile
+    - title_page.md
+    - abstract.md
+    - acknowledgements.md
+    - template.html
+    - images/sketch
+    - writegood
+    - haskell
+    - '*.sh'
+    - '*.py'
+    - '*.csl'
+    - '*.log'
+    - '*.bib'
+    - '*.wav'
+    - '*.pdf'

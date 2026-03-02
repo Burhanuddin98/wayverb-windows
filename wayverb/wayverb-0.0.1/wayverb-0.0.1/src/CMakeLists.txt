@@ -1,0 +1,11 @@
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED true)
+
+add_subdirectory(utilities)
+add_subdirectory(audio_file)
+add_subdirectory(frequency_domain)
+add_subdirectory(hrtf)
+add_subdirectory(core)
+add_subdirectory(waveguide)
+add_subdirectory(raytracer)
+add_subdirectory(combined)
