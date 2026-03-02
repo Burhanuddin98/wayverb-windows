@@ -1,166 +1,247 @@
-# Wayverb
+# Wayverb — Windows Port
 
-**Hybrid waveguide and ray-tracing room acoustic simulator with GPU acceleration.**
+> **Hybrid waveguide + ray-tracing room acoustic simulator with GPU acceleration.**
+> Originally macOS-only. This fork makes it run on **Windows 11** with MSYS2 / MinGW-w64 / NVIDIA OpenCL.
 
-![](docs_source/images/wayverb_ui.png)
+![Wayverb UI](docs_source/images/wayverb_ui.png)
 
-# Synopsis
+---
 
-This project contains a library for offline room-acoustics simulations, along
-with a graphical app which can be used to set-up and run these simulations.
-The app produces room impulse responses, which can be used with convolution
-reverbs to create realistic auralisations of virtual spaces.  Simulated room
-impulse responses may be particularly useful for architects, sound-designers,
-and musicians.
+## What is Wayverb?
 
-There are several common methods for simulating room acoustics, which can
-largely be subdivided into two main categories:
+Wayverb simulates how sound behaves inside a 3D room and produces a **room impulse response (IR)** — a `.wav` file you can drop into any convolution reverb to make audio sound like it was recorded in that space. Useful for architects, sound designers, game audio, and music production.
 
-- **Geometric methods** are fast but inaccurate, especially at low frequencies.
-- **Wave-modelling methods** are much more accurate, but time-consuming to
-  compute, especially at high frequencies.
+It combines three simulation methods to cover the full frequency range:
 
-As the strengths and weaknesses of the two methods balance one-another out, it
-makes sense to combine both methods, so that wave-modelling is used to simulate
-low-frequency output, and geometric methods are used to generate high-frequency
-content.
+| Method | Frequency range | What it models |
+|--------|----------------|----------------|
+| Image-source (ISM) | High — early reflections | Specular wall bounces |
+| Stochastic ray-tracing | High — late reverberation | Diffuse energy decay |
+| Rectilinear waveguide mesh (FDTD) | Low | Wave behaviour, diffraction, resonance |
 
-The approach of this library is to use:
+---
 
-- **image-source** (a geometric method) for high-frequency early reflections,
-- **stochastic ray-tracing** (another geometric method) for high-frequency late
-  reflections, and
-- **rectilinear waveguide mesh** (a wave-based method) for all low-frequency 
-  content.
+## Platform support
 
-# Usage Notes
+| Platform | Status |
+|----------|--------|
+| Windows 11 — MSYS2 / MinGW-w64 / GCC 15 | Working |
+| NVIDIA GPU (OpenCL) | Tested on RTX 2060 |
+| AMD GPU | Should work — untested |
+| macOS (original upstream) | See original readme section below |
 
-You'll need a 3D model of the space.  This model *must* be solid and
-watertight, without holes or no-thickness planes.  When the simulation is run,
-the waveguide mesh setup process will attempt to work out whether each node is
-inside or outside the space, and it will not be able to do so if the model does
-not have a well-defined inside and outside.
+---
 
-To ensure that your model is valid, you can:
+## Building on Windows 11
 
-1. Open the model in Sketchup.
-2. Select-all and Edit > Make Group.
-3. Check the info window (Window > Entity Info).
-4. If this window displays a volume, it is correct.
+### Prerequisites
 
-If the model is not valid, you can debug it using the ['Solid Inspector'
-plugin](https://extensions.sketchup.com/en/content/solid-inspector).
+- Windows 10 or 11 (64-bit)
+- [MSYS2](https://www.msys2.org/) installed to `C:\msys64`
+- An NVIDIA or AMD GPU with an up-to-date driver
 
-These instructions are taken from the readme for
-[ParallelFDTD](https://github.com/juuli/ParallelFDTD), which uses a similar
-(but not idential) technique to Wayverb for setting up a waveguide mesh.
+---
 
-Wayverb interprets the units used in the model file as metres. Some exporters
-(like the Sketchup `.dxf` exporter) silently change the scale of the model
-during export. For best results, it is recommended to export to `.obj` wherever
-possible.
-The following dialog shows optimum settings for the Sketchup Object exporter.
+### Step 1 — Install MSYS2
 
-![](docs_source/images/export_options.png)
+Download and run the installer from **https://www.msys2.org**.
 
-# Requirements
+Open the **MSYS2 MinGW64** shell (look for it in the Start menu — make sure it says MinGW64, not MSYS or UCRT64).
 
-## Running
+---
 
-To run the program you will need:
+### Step 2 — Install the toolchain and dependencies
 
-- Mac OS 10.10 or newer
-- GPU with double-precision support
+```bash
+pacman -Syu
+```
 
-While this project *might* work on a mac with integrated graphics, ideally you
-should use a recent mac with a discrete graphics card.
-You could be waiting a long time otherwise!
+Close and reopen the shell, then install everything in one command:
 
-This project has been developed and tested on Mac OS 10.11.6, on a Mac with an
-AMD GPU. It doesn't have any known bugs on this platform.
+```bash
+pacman -S --needed \
+  mingw-w64-x86_64-gcc \
+  mingw-w64-x86_64-cmake \
+  mingw-w64-x86_64-ninja \
+  mingw-w64-x86_64-pkg-config \
+  mingw-w64-x86_64-glm \
+  mingw-w64-x86_64-glew \
+  mingw-w64-x86_64-assimp \
+  mingw-w64-x86_64-fftw \
+  mingw-w64-x86_64-libsndfile \
+  mingw-w64-x86_64-libsamplerate \
+  mingw-w64-x86_64-gtest \
+  mingw-w64-x86_64-cereal \
+  mingw-w64-x86_64-opencl-icd \
+  mingw-w64-x86_64-opencl-headers \
+  git
+```
 
-Some testing has been carried out on Mac OS 10.10, using an Nvidia GPU. On this
-platform there were reasonably consistent crashes within OpenCL framework code.
-These crashes are difficult to track down and have not been fixed, as the
-author has been unable to secure extended access to a machine with this
-Nvidia/10.10 configuration.
+OpenCL uses your existing GPU driver via the ICD loader — no extra driver install needed beyond your normal GPU driver.
 
-Some bugs are to be expected: if you find a bug, please file it using the
-issues tab on the Github repository.
+---
 
-## Building
+### Step 3 — Clone the repo
 
-You will need:
+```bash
+git clone https://github.com/Burhanuddin98/wayverb-windows.git
+cd wayverb-windows/wayverb/wayverb-0.0.1/wayverb-0.0.1
+```
 
-- Mac OS 10.10 or newer
-- Really recent Clang with C++14 support and experimental C++17 headers
-  (development used Apple LLVM 8)
-- CMake
+---
 
-Open `wayverb/Builds/MacOS/wayverb.xcodeproj` and build from there. All
-dependencies should get downloaded and built automatically. **The initial build
-will be really slow**, due to downloading and compiling a lot of libraries.
-This is normal.
+### Step 4 — Build modern_gl_utils
 
-Unfortunately, some of the dependencies have their own dependencies. If
-building fails, you may also need to install the following:
+The GUI depends on a small OpenGL utility library that must be compiled first.
 
-- autoconf
-- autogen
-- automake
-- libtool
-- pkg-config
+```bash
+cd modern_gl_utils
+mkdir -p build_win && cd build_win
+cmake .. -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=C:/msys64/mingw64
+ninja
+cd ../..
+```
 
-If you have [Homebrew](http://brew.sh) installed, then you can grab everything
-you might need by running this command:
+---
 
-    brew install cmake autoconf autogen automake libtool pkg-config
+### Step 5 — Build the Wayverb libraries
 
-# Project Structure
+```bash
+mkdir -p build_win && cd build_win
+cmake .. -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=C:/msys64/mingw64
+ninja
+cd ..
+```
 
-## Important Folders
+This produces all static libraries in `build_win/lib/`.
 
-- **src**: all the library code for the project. This is further subdivided:
-    - **core**: generic utilities such as data structures, architectural
-      patterns and DSP helpers
-    - **raytracer**: components which relate specifically to geometric acoustics
-    - **waveguide**: components which relate specifically to finite-difference
-      time-domain (FDTD) air pressure simulation
-    - **combined**: one way of combining the ray-tracer and waveguide components
-      for broadband room acoustics simulations
-    - **audio_file**: wrapper round libsndfile. If I ever switch the soundfile
-      library from libsndfile (to something with a more flexible license) then
-      this module is all that will have to change.
-    - **frequency_domain**: wrapper around fftw. If I ever switch to some other
-      library, this is the only code that will have to change. There are also
-      a few utilities to do with analysis and filtering here.
-    - **hrtf**: small utility for generating hrtf data files from audio inputs.
-    - **utilities**: small self-contained utilities which aren't really tied to
-      this project, but they have to live somewhere.
-- **wayverb**: a GUI app interface to the `combined` library written with JUCE
-- **bin**: a collection of small command-line programs primarily for testing
-  outputs from the library components
-- **docs_source**: the source-code for the accompanying documentation. This
-  gets built into the contents of...
-- **docs**: automatically-generated documentation, visible at
-  [the Wayverb site](https://reuk.github.io/wayverb/).
+---
 
-## Other Folders
+### Step 6 — Build the GUI application
 
-- **scripts**: a 'scratchpad' folder for python and octave prototypes
-- **demo**: assets for testing purposes
-- **config**: these files configure the documentation generator. They used to
-  configure the Travis CI process which automatically built and published the
-  library documentation.
+```bash
+cd wayverb
+mkdir -p build_mgu && cd build_mgu
+cmake .. -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH=C:/msys64/mingw64
+ninja
+cd ../..
+```
 
-# License
+The final executable is at:
 
-Please see the `LICENSE` file for details.
+```
+bin/wayverb.exe
+```
 
-**Software is provided "as is", without warranty of any kind, express or
-implied, including but not limited to the warranties of merchantability, fitness
-for a particular purpose and noninfringement.
-In no event shall the authors or copyright holders be liable for any claim,
-damages or other libility, whether in an action of contract, tort or otherwise,
-arising from, out of or in connection with the software or the use or other
-dealings in the software.**
+---
+
+### Step 7 — Copy runtime DLLs
+
+The exe needs the MinGW runtime DLLs alongside it. From the `bin/` folder:
+
+```bash
+cd bin
+cp /c/msys64/mingw64/bin/libgcc_s_seh-1.dll .
+cp /c/msys64/mingw64/bin/libstdc++-6.dll .
+cp /c/msys64/mingw64/bin/libwinpthread-1.dll .
+cp /c/msys64/mingw64/bin/libassimp*.dll .
+cp /c/msys64/mingw64/bin/libsndfile*.dll .
+cp /c/msys64/mingw64/bin/libsamplerate*.dll .
+cp /c/msys64/mingw64/bin/libfftw3f*.dll .
+cp /c/msys64/mingw64/bin/libOpenCL.dll .
+cp /c/msys64/mingw64/bin/libmpg123*.dll .
+```
+
+---
+
+### Step 8 — Run
+
+```bash
+./bin/wayverb.exe
+```
+
+Or just double-click `wayverb.exe` from Explorer.
+
+---
+
+## Using Wayverb
+
+1. **File → Open** to load a `.obj` 3D room model.
+   - Bundled example scenes are in `demo/assets/test_models/`.
+   - Start with **`bedroom.obj`** (88 triangles) — renders in a few minutes on any modern GPU.
+2. Place the **source** (speaker) and **receiver** (microphone) inside the room using the 3D viewport.
+3. Click **Render** and wait. Progress shows in the status bar.
+4. The output `.wav` file is written to the folder you chose.
+
+### Scene size
+
+Wayverb was designed for small architectural rooms (roughly under 500 m³, a few thousand triangles). The Windows patches in this repo automatically cap ray count to 50 000 and image-source order to 1 to prevent GPU out-of-memory errors on larger scenes. Smaller scenes will always give the fastest and most reliable results.
+
+### Model requirements
+
+Your `.obj` must be **solid and watertight** — no holes, no zero-thickness planes. The waveguide mesh solver needs a well-defined inside and outside to work correctly.
+
+To validate in SketchUp: select all → **Edit → Make Group** → check **Window → Entity Info**. If it shows a volume, the model is valid. Use the [Solid Inspector plugin](https://extensions.sketchup.com/en/content/solid-inspector) to fix problems.
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---------|-------------|-----|
+| Black window on launch | GLM matrix initialisation on MinGW | Already patched — make sure you built from this repo |
+| `clBuildProgram` error in render log | NVIDIA driver rejected OpenCL kernel | Already patched — update your GPU driver |
+| Render crashes immediately | Scene too large | Use a smaller `.obj`, start with `bedroom.obj` |
+| Missing DLL error on launch | Runtime DLLs not next to the exe | Redo Step 7 |
+| `Source is outside mesh` | Source/receiver placed outside room | Move them inside the room in the viewport |
+| Very slow render | Too many triangles in scene | Use a simpler model |
+
+---
+
+## Windows patches applied vs. original source
+
+The original Wayverb 0.0.1 only supported macOS. Eight patches were required:
+
+| File | Problem fixed |
+|------|--------------|
+| `src/core/src/program_wrapper.cpp` | Removed `-Werror` from OpenCL builds; added build log output on failure |
+| `src/waveguide/src/boundary_coefficient_program.cpp` | Fixed implicit `int3 × float3` multiplication rejected by NVIDIA OpenCL → `convert_float3()` |
+| `src/combined/src/engine.cpp` | Cap rays to 50 000 and ISM order to 1; added diagnostic logging; mark `raytracer_` mutable |
+| `src/combined/src/threaded_engine.cpp` | Added `cl::Error` catch with error code; added stage logging throughout `do_run()` |
+| `src/raytracer/include/raytracer/raytracer.h` | Added diagnostic logging in the ray-tracing loop |
+| `src/raytracer/include/raytracer/stochastic/postprocessing.h` | Fixed `uniform_real_distribution{1.0, 0.0}` (invalid `a > b`, asserted by GCC 15) → exponential inverse-CDF |
+| `wayverb/Source/3d_objects/reflections_object.cpp` | Fixed for-loop off-by-one: counter was advanced with the already-incremented index, causing out-of-bounds access |
+| `wayverb/Source/scene/` + `UtilityComponents/generic_renderer.h` | `GLM_FORCE_CTOR_INIT` for identity-matrix initialisation on MSYS2; fixed GLSL attribute/uniform name mismatches |
+
+---
+
+## Project structure
+
+```
+src/
+  core/             Generic utilities, DSP helpers, OpenCL wrappers
+  raytracer/        Image-source + stochastic ray-tracing
+  waveguide/        FDTD waveguide mesh
+  combined/         Hybrid pipeline combining all three methods
+  audio_file/       libsndfile wrapper
+  frequency_domain/ FFTW wrapper + filtering utilities
+  hrtf/             HRTF data generation
+  utilities/        Miscellaneous self-contained helpers
+wayverb/            JUCE GUI application
+demo/               Example .obj scenes for testing
+docs/               Generated documentation
+```
+
+---
+
+## License
+
+See the `LICENSE` file. Original library by Reuben Thomas.
+
+**Software is provided "as is", without warranty of any kind.**
