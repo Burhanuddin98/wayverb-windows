@@ -28,7 +28,29 @@ void bottom::resized() {
 //  View methods
 void bottom::set_progress(double progress) { progress_ = progress; }
 void bottom::set_bar_text(const std::string& str) {
-    bar_.setTextToDisplay(str.c_str());
+    // Detect stage change to reset ETA timer
+    if (str != current_stage_label_) {
+        current_stage_label_ = str;
+        stage_start_time_ = clock_t::now();
+    }
+
+    // Compute ETA string
+    std::string display = str;
+    if (progress_ > 0.02 && progress_ < 1.0) {
+        const auto elapsed = std::chrono::duration<double>(
+                clock_t::now() - stage_start_time_).count();
+        const auto remaining = elapsed * (1.0 - progress_) / progress_;
+        if (remaining >= 1.0) {
+            const int mins = int(remaining) / 60;
+            const int secs = int(remaining) % 60;
+            if (mins > 0)
+                display += " — ~" + std::to_string(mins) + "m "
+                         + std::to_string(secs) + "s left";
+            else
+                display += " — ~" + std::to_string(secs) + "s left";
+        }
+    }
+    bar_.setTextToDisplay(display.c_str());
 }
 void bottom::set_state(state s) {
     state_ = s;

@@ -70,6 +70,7 @@ target_include_directories(wayverb PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/Source/left_bar"
     "${CMAKE_CURRENT_SOURCE_DIR}/Source/output"
     "${CMAKE_CURRENT_SOURCE_DIR}/Source/scene"
+    "${CMAKE_CURRENT_SOURCE_DIR}/Source/results"
     # Wayverb libraries (source include dirs)
     "${ROOT_DIR}/src/utilities/include"
     "${ROOT_DIR}/src/core/include"

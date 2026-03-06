@@ -123,6 +123,11 @@ double compute_sampling_frequency(const waveguide& waveguide) {
 
         case waveguide::mode::multiple:
             return compute_sampling_frequency(waveguide.multiple_band()->get());
+
+        case waveguide::mode::raytracer_only:
+            //  Return a minimal frequency — the engine will create a tiny
+            //  mesh (a few nodes) and the waveguide run returns immediately.
+            return 100.0;
     }
 }
 

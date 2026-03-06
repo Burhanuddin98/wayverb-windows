@@ -37,7 +37,14 @@ public:
                          const glm::vec3& source) {
         reflections_object_ = std::make_unique<reflections_object>(
                 reflections_shader_, std::move(reflections), source);
-        reflections_object_->set_distance(distance_);
+
+        // If no waveguide distance has been set yet (e.g. raytracer-only mode),
+        // show all rays fully extended by using a very large distance.
+        if (distance_ <= 0.0f) {
+            reflections_object_->set_distance(1e6);
+        } else {
+            reflections_object_->set_distance(distance_);
+        }
     }
 
     void set_distance_travelled(float distance) {
@@ -90,8 +97,10 @@ public:
                 std::end(sources),
                 [this](const auto& source) {
                     const auto a =
-                            source->hover_state()->get_hovered() ? 1.0 : 0.7;
-                    PointObject ret{generic_shader_, glm::vec4{a, 0, 0, 1}};
+                            source->hover_state()->get_hovered() ? 1.0f
+                                                                 : 0.7f;
+                    PointObject ret{generic_shader_,
+                                    glm::vec4{a, 0.0f, 0.0f, 1.0f}};
                     ret.set_scale(source_receiver_radius_);
                     ret.set_position(source->get_position());
                     return ret;
@@ -104,8 +113,10 @@ public:
                 std::end(receivers),
                 [this](const auto& receiver) {
                     const auto a =
-                            receiver->hover_state()->get_hovered() ? 1.0 : 0.7;
-                    PointObject ret{generic_shader_, glm::vec4{0, a, a, 1}};
+                            receiver->hover_state()->get_hovered() ? 1.0f
+                                                                   : 0.7f;
+                    PointObject ret{generic_shader_,
+                                    glm::vec4{0.0f, a, a, 1.0f}};
                     ret.set_pointing(util::map_to_vector(
                             std::begin(*receiver->capsules()),
                             std::end(*receiver->capsules()),
@@ -244,7 +255,7 @@ private:
 
     util::aligned::vector<PointObject> sources_;
     util::aligned::vector<PointObject> receivers_;
-    float source_receiver_radius_ = 0.4;
+    float source_receiver_radius_ = 0.4f;
 
     //  PointObjects
     AxesObject axes_{generic_shader_};

@@ -120,13 +120,70 @@ private:
 
 ////////////////////////////////////////////////////////////////////////////////
 
+/// A horizontal drag-slider property specifically for the polar pattern
+/// (0 = omni, 0.5 = cardioid, 1.0 = figure-8).
+class polar_slider_property final : public PropertyComponent,
+                                     public Slider::Listener {
+public:
+    polar_slider_property()
+            : PropertyComponent{"polar pattern", 40} {
+        slider_.setSliderStyle(Slider::LinearHorizontal);
+        slider_.setTextBoxStyle(Slider::TextBoxRight, false, 50, 20);
+        slider_.setRange(0.0, 1.0, 0.01);
+        slider_.addListener(this);
+        addAndMakeVisible(slider_);
+        addAndMakeVisible(label_);
+        label_.setFont(Font(10.0f));
+        label_.setColour(Label::textColourId, Colours::grey);
+        label_.setJustificationType(Justification::centred);
+    }
+
+    void set(double x) {
+        slider_.setValue(x, dontSendNotification);
+        updateLabel(x);
+    }
+
+    void refresh() override {}
+
+    using on_change = util::event<polar_slider_property&, double>;
+    on_change::connection connect_on_change(on_change::callback_type cb) {
+        return on_change_.connect(std::move(cb));
+    }
+
+    void sliderValueChanged(Slider*) override {
+        double v = slider_.getValue();
+        updateLabel(v);
+        on_change_(*this, v);
+    }
+
+    void resized() override {
+        auto bounds = getLookAndFeel().getPropertyComponentContentPosition(*this);
+        auto labelArea = bounds.removeFromBottom(14);
+        slider_.setBounds(bounds);
+        label_.setBounds(labelArea);
+    }
+
+private:
+    void updateLabel(double v) {
+        if (v < 0.15)        label_.setText("omni", dontSendNotification);
+        else if (v < 0.35)   label_.setText("sub-cardioid", dontSendNotification);
+        else if (v < 0.60)   label_.setText("cardioid", dontSendNotification);
+        else if (v < 0.80)   label_.setText("super-cardioid", dontSendNotification);
+        else                  label_.setText("figure-8", dontSendNotification);
+    }
+
+    Slider slider_;
+    Label label_;
+    on_change on_change_;
+};
+
 class microphone_properties final : public PropertyPanel {
 public:
     microphone_properties(wayverb::combined::model::microphone& model)
             : model_{model} {
         auto orientation =
                 std::make_unique<azimuth_elevation_property>("orientation");
-        auto shape = std::make_unique<slider_property>("polar pattern", 0, 1);
+        auto shape = std::make_unique<polar_slider_property>();
         auto display =
                 std::make_unique<PolarPatternProperty>("pattern display", 80);
 
@@ -227,7 +284,7 @@ public:
         auto name = std::make_unique<text_property>("name");
         auto config = std::make_unique<
                 generic_property_component<capsule_type_editor>>(
-                "capsule type", 200, *model_);
+                "capsule type", 220, *model_);
 
         const auto update_from_capsule =
                 [ this, n = name.get() ](auto& capsule) {

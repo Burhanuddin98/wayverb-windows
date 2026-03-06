@@ -110,38 +110,64 @@ private:
 
 ////////////////////////////////////////////////////////////////////////////////
 
-class material_component final : public PropertyPanel,
-                                 public ComboBox::Listener {
+class preset_list_component final : public Component, public ListBoxModel {
+public:
+    using material_t = wayverb::combined::model::material;
+    using presets_t = main_model::material_presets_t;
+
+    preset_list_component(const presets_t& presets, material_t& model)
+            : presets_{presets}, model_{model} {
+        list_box_.setModel(this);
+        list_box_.setRowHeight(22);
+        list_box_.setColour(ListBox::backgroundColourId, Colours::darkgrey);
+        list_box_.setColour(ListBox::outlineColourId, Colours::grey);
+        addAndMakeVisible(list_box_);
+    }
+
+    int getNumRows() override { return int(presets_.size()); }
+
+    void paintListBoxItem(int row, Graphics& g, int w, int h,
+                          bool selected) override {
+        if (selected) g.fillAll(Colour(0xff8a2be2).withAlpha(0.4f));
+        g.setColour(Colours::lightgrey);
+        g.setFont(12.0f);
+        if (row >= 0 && row < int(presets_.size()))
+            g.drawText(presets_[row].get_name(), 6, 0, w - 6, h,
+                       Justification::centredLeft);
+    }
+
+    void listBoxItemClicked(int row, const MouseEvent&) override {
+        if (row >= 0 && row < int(presets_.size()))
+            model_.set_surface(presets_[row].get_surface());
+    }
+
+    void resized() override { list_box_.setBounds(getLocalBounds()); }
+
+private:
+    const presets_t& presets_;
+    material_t& model_;
+    ListBox list_box_;
+};
+
+class material_component final : public Component {
 public:
     using material_t = wayverb::combined::model::material;
     using presets_t = main_model::material_presets_t;
 
     material_component(const presets_t& presets, material_t& model)
             : presets_{presets}
-            , model_{model} {
+            , model_{model}
+            , preset_list_{presets, model} {
+        // Left side: sliders panel
         auto frequencies =
                 std::make_unique<property_component_adapter<frequency_labels>>(
-                        "band centres / Hz", 25);
+                        "Band Centres (Hz)", 25);
         auto absorption =
                 std::make_unique<property_component_adapter<bands_component>>(
-                        "absorption", 100, 0.01, 1.0, 0.01);
+                        "Absorption", 100, 0.01, 1.0, 0.01);
         auto scattering =
                 std::make_unique<property_component_adapter<bands_component>>(
-                        "scattering", 100, 0.0, 1.0, 0.01);
-
-        auto preset_box =
-                std::make_unique<property_component_adapter<ComboBox>>(
-                        "presets", 25);
-
-        preset_box->content.setTextWhenNothingSelected("material presets...");
-        preset_box->content.addListener(this);
-
-        {
-            auto count = 1;
-            for (const auto& i : presets) {
-                preset_box->content.addItem(i.get_name(), count++);
-            }
-        }
+                        "Scattering", 100, 0.0, 1.0, 0.01);
 
         const auto update_from_material =
                 [ this, a = &absorption->content, s = &scattering->content ](
@@ -166,26 +192,39 @@ public:
         absorption->content.connect_on_change(update_from_controls);
         scattering->content.connect_on_change(update_from_controls);
 
-        addProperties({frequencies.release()});
-        addProperties({absorption.release()});
-        addProperties({scattering.release()});
-        addProperties({preset_box.release()});
+        sliders_panel_.addProperties({frequencies.release()});
+        sliders_panel_.addProperties({absorption.release()});
+        sliders_panel_.addProperties({scattering.release()});
 
-        setSize(497, getTotalContentHeight());
+        addAndMakeVisible(sliders_panel_);
+        addAndMakeVisible(preset_list_);
+        addAndMakeVisible(preset_label_);
+        preset_label_.setFont(Font(12.0f, Font::bold));
+        preset_label_.setColour(Label::textColourId, Colours::lightgrey);
+        preset_label_.setText("Material Presets", dontSendNotification);
+
+        setSize(680, sliders_panel_.getTotalContentHeight());
     }
 
-    void comboBoxChanged(ComboBox* cb) override {
-        const auto selected = cb->getSelectedItemIndex();
-        if (selected != -1) {
-            model_.set_surface(presets_[selected].get_surface());
-        }
-        cb->setSelectedItemIndex(-1, dontSendNotification);
+    void resized() override {
+        auto bounds = getLocalBounds();
+        // Right column: preset list (200px wide)
+        auto presetArea = bounds.removeFromRight(200);
+        auto labelArea = presetArea.removeFromTop(20);
+        preset_label_.setBounds(labelArea);
+        preset_list_.setBounds(presetArea);
+        // Left column: sliders
+        sliders_panel_.setBounds(bounds);
     }
 
 private:
     const presets_t& presets_;
     material_t& model_;
     material_t::scoped_connection connection_;
+
+    PropertyPanel sliders_panel_;
+    preset_list_component preset_list_;
+    Label preset_label_;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -193,7 +232,8 @@ private:
 config_item::config_item(wayverb::combined::model::scene& scene,
                          const presets_t& presets,
                          std::shared_ptr<material_t> model,
-                         size_t index)
+                         size_t index,
+                         on_delete_t on_delete)
         : scene_{scene}
         , scene_connection_{scene_.connect_visible_surface_changed(
                   [this](auto surf) {
@@ -203,13 +243,21 @@ config_item::config_item(wayverb::combined::model::scene& scene,
         , presets_{presets}
         , model_{std::move(model)}
         , index_{index}
+        , on_delete_{std::move(on_delete)}
         , label_{"", model_->get_name()} {
+    label_.setEditable(false, true, false);  // double-click to edit
+    label_.addListener(this);
+    label_.setTooltip("Double-click to rename.");
+
     addAndMakeVisible(label_);
     addAndMakeVisible(show_button_);
     addAndMakeVisible(config_button_);
+    addAndMakeVisible(delete_button_);
 
     show_button_.setTooltip("Display the triangles which use this material.");
     config_button_.setTooltip("Configure this material.");
+    delete_button_.setTooltip("Delete this material (triangles merge into first material).");
+    delete_button_.setColour(TextButton::buttonColourId, Colour(0xff882222));
 
     setSize(300, 30);
 }
@@ -217,11 +265,19 @@ config_item::config_item(wayverb::combined::model::scene& scene,
 void config_item::resized() {
     const auto button_width = this->getHeight();
     auto bounds = this->getLocalBounds();
+    delete_button_.setBounds(
+            bounds.removeFromRight(button_width).reduced(2, 2));
     config_button_.setBounds(
             bounds.removeFromRight(button_width).reduced(2, 2));
     show_button_.setBounds(
             bounds.removeFromRight(button_width * 2).reduced(2, 2));
     label_.setBounds(bounds.reduced(2, 2));
+}
+
+void config_item::labelTextChanged(Label* l) {
+    if (l == &label_) {
+        model_->set_name(label_.getText().toStdString());
+    }
 }
 
 void config_item::buttonClicked(Button* b) {
@@ -235,6 +291,10 @@ void config_item::buttonClicked(Button* b) {
                 make_done_window_ptr(std::make_unique<material_component>(
                         presets_, *model_)),
                 [](auto) {});
+    } else if (b == &delete_button_) {
+        if (on_delete_) {
+            on_delete_(index_);
+        }
     }
 }
 

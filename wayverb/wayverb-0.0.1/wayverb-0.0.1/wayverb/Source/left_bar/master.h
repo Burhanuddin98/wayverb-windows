@@ -11,7 +11,13 @@ public:
 
     void resized() override;
 
+    /// Rebuild the materials section (call after adding/reassigning materials).
+    void refresh_materials();
+
 private:
+    void do_add_material();
+    void do_set_all_materials();
+
     main_model& model_;
 
     main_model::begun::scoped_connection begun_connection_;

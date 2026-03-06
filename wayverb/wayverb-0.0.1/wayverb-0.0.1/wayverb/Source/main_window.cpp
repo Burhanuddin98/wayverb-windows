@@ -4,8 +4,19 @@
 #include "try_and_explain.h"
 
 #include "core/reverb_time.h"
+#include "combined/model/waveguide.h"
 
+#include "self_test.h"
 #include "output/master.h"
+
+#include "BinaryData.h"
+
+#include <cmath>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <dwmapi.h>
+#endif
 
 //  init from as much outside info as possible
 main_window::main_window(ApplicationCommandTarget& next,
@@ -19,7 +30,7 @@ main_window::main_window(ApplicationCommandTarget& next,
                   [this](auto err_str) {
                       AlertWindow::showMessageBoxAsync(
                               AlertWindow::AlertIconType::WarningIcon,
-                              "render error",
+                              "Render Error",
                               err_str);
                   })}
         , begun_connection_{model_.connect_begun([this] {
@@ -27,6 +38,15 @@ main_window::main_window(ApplicationCommandTarget& next,
         })}
         , finished_connection_{model_.connect_finished([this] {
             wayverb_application::get_command_manager().commandStatusChanged();
+            // Open results window with rendered files
+            const auto fnames =
+                    wayverb::combined::model::compute_all_file_names(
+                            model_.project.persistent, model_.output);
+            if (!fnames.empty()) {
+                const auto sr = wayverb::combined::model::get_sample_rate(
+                        model_.output.get_sample_rate());
+                results_window_ = std::make_unique<ResultsWindow>(fnames, sr);
+            }
         })} {
     content_component_.setSize(800, 600);
     setContentNonOwned(&content_component_, true);
@@ -36,6 +56,31 @@ main_window::main_window(ApplicationCommandTarget& next,
     setResizable(true, false);
     setResizeLimits(400, 300, 100000, 100000);
     setVisible(true);
+
+    // Set wayverb logo as the window icon (taskbar + title bar)
+    {
+        const auto icon = juce::ImageCache::getFromMemory(
+                BinaryData::wayverb_png, BinaryData::wayverb_pngSize);
+        if (icon.isValid()) {
+            if (auto* peer = getPeer()) {
+                peer->setIcon(icon);
+            }
+        }
+    }
+
+#ifdef _WIN32
+    // Paint the title bar in wayverb purple using the Windows 11 DWM API.
+    // DWMWA_CAPTION_COLOR = 35 — silently ignored on Windows 10 and older.
+    {
+        if (auto* peer = getPeer()) {
+            HWND hwnd = static_cast<HWND>(peer->getNativeHandle());
+            COLORREF purple = RGB(92, 0, 163);
+            constexpr DWORD DWMWA_CAPTION_COLOR_VAL = 35;
+            DwmSetWindowAttribute(
+                    hwnd, DWMWA_CAPTION_COLOR_VAL, &purple, sizeof(purple));
+        }
+    }
+#endif
 
     auto& command_manager = wayverb_application::get_command_manager();
     command_manager.registerAllCommandsForTarget(this);
@@ -58,7 +103,7 @@ bool main_window::prepare_to_close() {
     if (model_.needs_save()) {
         switch (NativeMessageBox::showYesNoCancelBox(
                 AlertWindow::AlertIconType::WarningIcon,
-                "save?",
+                "Save?",
                 "There are unsaved changes. Do you wish to save?")) {
             case 0:  // cancel
                 return false;
@@ -66,7 +111,7 @@ bool main_window::prepare_to_close() {
             case 1:  // yes
                 //  Attempt to save. Show a dialog if something goes wrong.
                 try_and_explain([&] { save(); },
-                                "saving project",
+                                "Saving Project",
                                 "Make sure the destination is writable.");
 
                 //  If the model still needs saving for some reason (the user
@@ -101,6 +146,7 @@ void main_window::getAllCommands(Array<CommandID>& commands) {
             CommandIDs::idResetView,
             CommandIDs::idStartRender,
             CommandIDs::idCancelRender,
+            CommandIDs::idRunSelfTest,
     });
 }
 
@@ -155,17 +201,26 @@ void main_window::getCommandInfo(CommandID command_id,
                            0);
             result.setActive(model_.is_rendering());
             break;
+
+        case CommandIDs::idRunSelfTest:
+            result.setInfo("Run Self-Test...",
+                           "Check OpenCL, geometry, configuration",
+                           "General",
+                           0);
+            result.defaultKeypresses.add(
+                    KeyPress('t', ModifierKeys::commandModifier, 0));
+            break;
     }
 }
 
 bool main_window::perform(const InvocationInfo& info) {
     switch (info.commandID) {
         case CommandIDs::idSaveProject:
-            try_and_explain([&] { save(); }, "saving");
+            try_and_explain([&] { save(); }, "Saving");
             return true;
 
         case CommandIDs::idSaveAsProject:
-            try_and_explain([&] { save_as(); }, "saving as");
+            try_and_explain([&] { save_as(); }, "Saving As");
             return true;
 
         case CommandIDs::idCloseProject: closeButtonPressed(); return true;
@@ -188,7 +243,7 @@ bool main_window::perform(const InvocationInfo& info) {
                         if (File(fname).exists()) {
                             if (AlertWindow::showOkCancelBox(
                                         AlertWindow::AlertIconType::WarningIcon,
-                                        "overwrite files?",
+                                        "Overwrite Files?",
                                         "Existing files will be overwritten if "
                                         "you "
                                         "decide to continue with the rendering "
@@ -200,6 +255,43 @@ bool main_window::perform(const InvocationInfo& info) {
                         }
                     }
 
+                    // Estimate GPU memory usage before starting
+                    const auto& wg = *model_.project.persistent.waveguide();
+                    const auto sr = wayverb::combined::model::compute_sampling_frequency(wg);
+                    constexpr double speed_of_sound = 340.0;
+                    const double dx = speed_of_sound / (sr * std::sqrt(3.0));
+
+                    const auto volume = wayverb::core::estimate_room_volume(
+                            model_.project.get_scene_data());
+                    const double est_nodes = volume / (dx * dx * dx);
+                    constexpr double bytes_per_node = 32.0;
+                    const double est_mb = est_nodes * bytes_per_node / (1024.0 * 1024.0);
+
+                    if (est_mb > 256.0) {
+                        String warn_msg;
+                        warn_msg << "Estimated GPU memory: "
+                                 << String(est_mb, 0) << " MB\n"
+                                 << "(" << String(est_nodes / 1e6, 1)
+                                 << "M waveguide nodes at dx="
+                                 << String(dx * 100, 1) << " cm)\n\n";
+                        if (est_mb > 4096.0) {
+                            warn_msg << "This will very likely CRASH on most GPUs.\n"
+                                     << "Consider using raytracer-only mode or\n"
+                                     << "lowering the waveguide cutoff frequency.\n\n";
+                        } else if (est_mb > 2048.0) {
+                            warn_msg << "This may exceed your GPU's VRAM.\n"
+                                     << "Consider lowering the cutoff frequency.\n\n";
+                        }
+                        warn_msg << "Continue anyway?";
+
+                        if (!AlertWindow::showOkCancelBox(
+                                    AlertWindow::AlertIconType::WarningIcon,
+                                    "GPU Memory Warning",
+                                    warn_msg)) {
+                            return;
+                        }
+                    }
+
                     model_.start_render();
                 }
             });
@@ -207,6 +299,21 @@ bool main_window::perform(const InvocationInfo& info) {
         }
 
         case CommandIDs::idCancelRender: model_.cancel_render(); return true;
+
+        case CommandIDs::idRunSelfTest: {
+            const auto results = SelfTest::run_all(model_);
+            const auto report = SelfTest::format_report(results);
+            bool all_passed = true;
+            for (const auto& r : results) {
+                if (!r.passed) { all_passed = false; break; }
+            }
+            AlertWindow::showMessageBoxAsync(
+                    all_passed ? AlertWindow::AlertIconType::InfoIcon
+                               : AlertWindow::AlertIconType::WarningIcon,
+                    "Self-Test Results",
+                    report);
+            return true;
+        }
 
         default: return false;
     }
@@ -228,7 +335,7 @@ void main_window::save_as() {
 
 std::optional<std::string>
 main_window::browse_for_file_to_save() {
-    FileChooser fc{"save location...", File(), project::project_wildcard};
+    FileChooser fc{"Save Location...", File(), project::project_wildcard};
     if (fc.browseForFileToSave(true)) {
         const auto path = fc.getResult();
         path.createDirectory();

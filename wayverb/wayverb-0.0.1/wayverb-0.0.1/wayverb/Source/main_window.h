@@ -2,6 +2,7 @@
 
 #include "main_model.h"
 #include "MainContentComponent.h"
+#include "results/results_window.h"
 
 class main_window final : public DocumentWindow,
                           public ApplicationCommandTarget {
@@ -46,4 +47,6 @@ private:
     main_model::finished::scoped_connection finished_connection_;
 
     wants_to_close wants_to_close_;
+
+    std::unique_ptr<ResultsWindow> results_window_;
 };

@@ -169,13 +169,28 @@ master::master(model_t& model)
     auto single = std::make_unique<single_properties>(*model_.single_band());
     auto multi = std::make_unique<multiple_properties>(*model_.multiple_band());
 
+    //  "raytracer only" tab — just a label explaining this mode.
+    auto rt_only = std::make_unique<Component>();
+    auto rt_label = std::make_unique<Label>(
+            "", "Skips the FDTD waveguide.\n\n"
+                "Uses geometric ray tracing only,\n"
+                "like Odeon / CATT-Acoustic.\n\n"
+                "Much faster for large rooms.");
+    rt_label->setJustificationType(Justification::centredTop);
+    rt_label->setColour(Label::textColourId, Colours::lightgrey);
+    rt_label->setBounds(0, 10, 300, 120);
+    rt_only->addAndMakeVisible(rt_label.release());
+    rt_only->setSize(300, 130);
+
     setSize(300,
-            std::max(single->getTotalContentHeight(),
-                     multi->getTotalContentHeight()) +
+            std::max({single->getTotalContentHeight(),
+                      multi->getTotalContentHeight(),
+                      130}) +
                     getTabBarDepth() + 2);
 
     addTab("single", Colours::darkgrey, single.release(), true);
     addTab("multi", Colours::darkgrey, multi.release(), true);
+    addTab("raytracer only", Colours::darkgrey, rt_only.release(), true);
 
     const auto update_from_waveguide = [this](auto& m) {
         switch (m.get_mode()) {
@@ -185,6 +200,10 @@ master::master(model_t& model)
 
             case model_t::mode::multiple:
                 setCurrentTabIndex(1, dontSendNotification);
+                break;
+
+            case model_t::mode::raytracer_only:
+                setCurrentTabIndex(2, dontSendNotification);
                 break;
         }
     };
@@ -201,8 +220,8 @@ void master::currentTabChanged(int new_index, const String&) {
     if (!initializing_) {
         switch (new_index) {
             case 0: model_.set_mode(model_t::mode::single); break;
-
             case 1: model_.set_mode(model_t::mode::multiple); break;
+            case 2: model_.set_mode(model_t::mode::raytracer_only); break;
         }
     }
 }

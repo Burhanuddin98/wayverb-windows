@@ -146,7 +146,7 @@ private:
             setApplicationCommandManagerToWatch(&command_manager_);
         }
 
-        StringArray getMenuBarNames() override { return {"File", "View"}; }
+        StringArray getMenuBarNames() override { return {"File", "View", "Tools"}; }
 
         PopupMenu getMenuForIndex(int /*top_level_menu_index*/,
                                   const String& menu_name) override {
@@ -155,6 +155,8 @@ private:
                 create_file_menu(command_manager_, menu);
             } else if (menu_name == "View") {
                 create_view_menu(command_manager_, menu);
+            } else if (menu_name == "Tools") {
+                create_tools_menu(command_manager_, menu);
             } else {
                 jassertfalse;
             }
@@ -203,6 +205,11 @@ private:
                               PopupMenu& menu) {
             menu.addCommandItem(&command_manager, CommandIDs::idVisualise);
             menu.addCommandItem(&command_manager, CommandIDs::idResetView);
+        }
+
+        void create_tools_menu(ApplicationCommandManager& command_manager,
+                               PopupMenu& menu) {
+            menu.addCommandItem(&command_manager, CommandIDs::idRunSelfTest);
         }
 
         using recent_file_selected = util::event<std::string>;

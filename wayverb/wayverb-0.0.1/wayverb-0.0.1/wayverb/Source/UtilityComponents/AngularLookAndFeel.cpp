@@ -427,6 +427,11 @@ void AngularLookAndFeel::drawLinearSliderBackground(
         g.setColour(Colours::black.withAlpha(0.5f));
         g.fillRoundedRectangle(
                 bounds.withSizeKeepingCentre(3, height).toFloat(), 2);
+    } else if (style == Slider::SliderStyle::LinearHorizontal) {
+        Rectangle<int> bounds(x, y, width, height);
+        g.setColour(Colours::black.withAlpha(0.5f));
+        g.fillRoundedRectangle(
+                bounds.withSizeKeepingCentre(width, 3).toFloat(), 2);
     }
 }
 
@@ -457,8 +462,12 @@ void AngularLookAndFeel::drawLinearSliderThumb(Graphics& g,
                                                 slider_radius * 2 - 6),
                                  thumb_colour);
         } else {
-            //            auto kx = slider_pos;
-            //            auto ky = y + height * 0.5f;
+            matte_foreground_box(g,
+                                 Rectangle<int>(slider_pos - slider_radius + 3,
+                                                y + height * 0.5 - slider_radius,
+                                                slider_radius * 2 - 6,
+                                                slider_radius * 2),
+                                 thumb_colour);
         }
     }
 }

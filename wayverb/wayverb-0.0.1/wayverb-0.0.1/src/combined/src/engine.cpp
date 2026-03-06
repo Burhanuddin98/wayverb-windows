@@ -119,28 +119,15 @@ public:
                 room_volume_);
         fflush(stderr);
 
-        // Cap ray count and image source order to avoid OOM/timeout on large
-        // or geometrically complex scenes.  Wayverb's auto-quality formula
-        // was designed for small architectural rooms (~100 m³); scenes with
-        // thousands of m³ or 100k+ triangles produce millions of rays that
-        // exhaust GPU resources.  50 000 rays gives acceptable stochastic
-        // results in a few minutes on a mid-range GPU; order-1 image sources
-        // are fast and still capture first-order wall reflections correctly.
-        constexpr size_t MAX_RAYS          = 50000;
-        constexpr size_t MAX_IMG_SRC_ORDER = 1;
+        // Cap ray count to prevent GPU memory exhaustion on 6GB cards.
+        // Each ray needs ~56 bytes of buffer; 100K rays ≈ 5.6 MB which is safe.
+        constexpr size_t MAX_RAYS = 100000;
         if (raytracer_.rays > MAX_RAYS) {
-            fprintf(stderr, "[engine] capping rays %zu -> %zu\n",
+            fprintf(stderr, "[engine] Capping rays %zu -> %zu (VRAM limit)\n",
                     raytracer_.rays, MAX_RAYS);
+            fflush(stderr);
             raytracer_.rays = MAX_RAYS;
         }
-        if (raytracer_.maximum_image_source_order > MAX_IMG_SRC_ORDER) {
-            fprintf(stderr, "[engine] capping img_src_order %zu -> %zu\n",
-                    raytracer_.maximum_image_source_order, MAX_IMG_SRC_ORDER);
-            raytracer_.maximum_image_source_order = MAX_IMG_SRC_ORDER;
-        }
-        fprintf(stderr, "[engine] run: effective rays=%zu img_src_order=%zu\n",
-                raytracer_.rays, raytracer_.maximum_image_source_order);
-        fflush(stderr);
 
         engine_state_changed_(state::starting_raytracer, 1.0);
 

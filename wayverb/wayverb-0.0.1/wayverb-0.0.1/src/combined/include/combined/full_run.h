@@ -4,6 +4,7 @@
 #include "combined/engine.h"
 #include "combined/forwarding_call.h"
 
+#include <cstdio>
 #include <optional>
 
 namespace wayverb {
@@ -61,18 +62,36 @@ public:
 
         //  Start running.
 
+        fprintf(stderr, "[postprocessing_engine] calling engine_.run()\n"); fflush(stderr);
         const auto intermediate = engine_.run(keep_going);
 
         if (intermediate == nullptr) {
+            fprintf(stderr, "[postprocessing_engine] engine_.run() returned null\n"); fflush(stderr);
             return std::nullopt;
         }
 
+        fprintf(stderr, "[postprocessing_engine] engine_.run() OK, starting postprocessing\n"); fflush(stderr);
         engine_state_changed_(state::postprocessing, 1.0);
 
         util::aligned::vector<util::aligned::vector<float>> channels;
-        for (auto it = b_capsules; it != e_capsules && keep_going; ++it) {
-            channels.emplace_back(
-                    (*it)->postprocess(*intermediate, sample_rate));
+        size_t capsule_idx = 0;
+        for (auto it = b_capsules; it != e_capsules && keep_going; ++it, ++capsule_idx) {
+            fprintf(stderr, "[postprocessing_engine] postprocessing capsule %zu at sr=%.0f\n",
+                    capsule_idx, sample_rate); fflush(stderr);
+            try {
+                channels.emplace_back(
+                        (*it)->postprocess(*intermediate, sample_rate));
+                fprintf(stderr, "[postprocessing_engine] capsule %zu done, len=%zu\n",
+                        capsule_idx, channels.back().size()); fflush(stderr);
+            } catch (const std::exception& e) {
+                fprintf(stderr, "[postprocessing_engine] CAPSULE %zu POSTPROCESS FAILED: %s\n",
+                        capsule_idx, e.what()); fflush(stderr);
+                throw;
+            } catch (...) {
+                fprintf(stderr, "[postprocessing_engine] CAPSULE %zu UNKNOWN CRASH\n",
+                        capsule_idx); fflush(stderr);
+                throw std::runtime_error("Unknown error during capsule postprocessing");
+            }
         }
 
         if (!keep_going) {

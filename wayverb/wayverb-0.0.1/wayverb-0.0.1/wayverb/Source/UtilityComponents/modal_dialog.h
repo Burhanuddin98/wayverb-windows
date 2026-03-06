@@ -3,6 +3,9 @@
 #include "AngularLookAndFeel.h"
 #include "connector.h"
 
+/// Apply wayverb icon + purple title bar to a top-level window.
+void apply_wayverb_window_style(TopLevelWindow* w);
+
 template <typename T>
 class ok_cancel_window final : public Component, public ButtonListener {
 public:
@@ -143,6 +146,7 @@ void begin_modal_dialog(const std::string& title,
     launchOptions.resizable = false;
     launchOptions.useBottomRightCornerResizer = false;
     auto dw = launchOptions.create();
+    apply_wayverb_window_style(dw);
     dw->enterModalState(
             true,
             make_generic_modal_callback_ptr(std::move(callback)).release(),

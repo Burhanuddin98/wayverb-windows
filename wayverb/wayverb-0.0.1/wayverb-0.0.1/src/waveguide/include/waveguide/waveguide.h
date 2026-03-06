@@ -10,6 +10,9 @@
 #include <cassert>
 #include <functional>
 #include <iostream>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 namespace wayverb {
 namespace waveguide {
@@ -121,6 +124,17 @@ size_t run(const core::compute_context& cc,
         post(queue, current, step);
 
         std::swap(previous, current);
+
+        //  Yield to OS every 50 steps to prevent Windows TDR.
+        //  The GPU driver needs periodic idle time to service display
+        //  requests; without this, continuous kernel dispatch can trigger
+        //  a driver timeout reset after several thousand steps.
+#ifdef _WIN32
+        if (step % 50 == 0) {
+            queue.finish();
+            Sleep(2);  // 2ms yield — lets GPU driver service display
+        }
+#endif
     }
     return step;
 }

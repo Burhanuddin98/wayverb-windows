@@ -25,6 +25,10 @@ public:
 
     void set_room_volume(double volume);
 
+    /// When non-zero, overrides the quality-based ray count formula.
+    void set_ray_count_override(size_t rays);
+    size_t get_ray_count_override() const;
+
     wayverb::raytracer::simulation_parameters get() const;
 
     template <typename Archive>
@@ -38,6 +42,7 @@ private:
         using std::swap;
         swap(quality_, other.quality_);
         swap(img_src_order_, other.img_src_order_);
+        swap(ray_count_override_, other.ray_count_override_);
     }
 
     double room_volume_;
@@ -45,6 +50,7 @@ private:
 
     size_t quality_;
     size_t img_src_order_;
+    size_t ray_count_override_ = 0;  ///< 0 = use quality formula
 
     double receiver_radius_;
     double histogram_sample_rate_;

@@ -7,19 +7,48 @@
 namespace left_bar {
 namespace raytracer {
 
-rays_required_property::rays_required_property(model_t& model)
-        : text_display_property{model, "rays"} {
-    this->update_from_model();
+ray_count_property::ray_count_property(model_t& model)
+        : PropertyComponent{"Rays", 25}
+        , model_{model}
+        , connection_{model_.connect(
+                  [this](auto&) { this->update_from_model(); })} {
+    label_.setEditable(false, true, false);
+    label_.addListener(this);
+    addAndMakeVisible(label_);
+    update_from_model();
 }
 
-std::string rays_required_property::get_model(const model_t& model) const {
-    return std::to_string(model.get().rays);
+void ray_count_property::labelTextChanged(Label* label) {
+    const auto text = label->getText().trim();
+    if (text.isEmpty()) {
+        model_.set_ray_count_override(0);
+        return;
+    }
+    const auto val = text.getLargeIntValue();
+    if (val > 0) {
+        model_.set_ray_count_override(static_cast<size_t>(val));
+    } else {
+        model_.set_ray_count_override(0);
+    }
+}
+
+void ray_count_property::update_from_model() {
+    const auto override_val = model_.get_ray_count_override();
+    const auto computed = model_.get().rays;
+    if (override_val > 0) {
+        label_.setText(String(override_val), dontSendNotification);
+        label_.setColour(Label::textColourId, Colours::white);
+    } else {
+        label_.setText(String(computed) + " (auto)",
+                       dontSendNotification);
+        label_.setColour(Label::textColourId, Colours::grey);
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
 quality_property::quality_property(model_t& model)
-        : generic_slider_property{model, "quality", 1, 20, 1} {
+        : generic_slider_property{model, "Quality", 1, 20, 1} {
     update_from_model();
 }
 
@@ -35,7 +64,7 @@ quality_property::value_t quality_property::get_model(
 ////////////////////////////////////////////////////////////////////////////////
 
 img_src_order_property::img_src_order_property(model_t& model)
-        : generic_slider_property{model, "img-src levels", 0, 10, 1} {
+        : generic_slider_property{model, "Image Source Levels", 0, 10, 1} {
     update_from_model();
 }
 

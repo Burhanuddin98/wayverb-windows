@@ -1,0 +1,1428 @@
+#include "results_window.h"
+#include "BinaryData.h"
+
+#ifdef _WIN32
+#include <windows.h>
+#include <dwmapi.h>
+#endif
+
+#include <cmath>
+#include <complex>
+#include <numeric>
+#include <algorithm>
+
+namespace {
+
+using juce::Rectangle;  // disambiguate from wingdi.h Rectangle()
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Inferno colormap
+// ═════════════════════════════════════════════════════════════════════════════
+
+Colour inferno(float t) {
+    t = juce::jlimit(0.0f, 1.0f, t);
+    struct Stop { float t; uint8 r, g, b; };
+    static const Stop stops[] = {
+        {0.00f,   0,   0,   4}, {0.13f,  40,  11,  84},
+        {0.25f,  89,  13, 126}, {0.38f, 137,  21, 117},
+        {0.50f, 188,  55,  84}, {0.63f, 227,  97,  49},
+        {0.75f, 251, 150,  24}, {0.88f, 252, 206,  37},
+        {1.00f, 252, 255, 164},
+    };
+    int i = 0;
+    for (; i < 7; ++i) if (t <= stops[i + 1].t) break;
+    const auto& a = stops[i];
+    const auto& b = stops[i + 1];
+    float f = (t - a.t) / (b.t - a.t);
+    return Colour(uint8(a.r + f * (b.r - a.r)),
+                  uint8(a.g + f * (b.g - a.g)),
+                  uint8(a.b + f * (b.b - a.b)));
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FFT (radix-2 Cooley-Tukey)
+// ═════════════════════════════════════════════════════════════════════════════
+
+void fft_inplace(std::vector<std::complex<float>>& x) {
+    const size_t N = x.size();
+    if (N <= 1) return;
+    for (size_t i = 1, j = 0; i < N; ++i) {
+        size_t bit = N >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) std::swap(x[i], x[j]);
+    }
+    for (size_t len = 2; len <= N; len <<= 1) {
+        float ang = -2.0f * float(M_PI) / float(len);
+        std::complex<float> wlen(std::cos(ang), std::sin(ang));
+        for (size_t i = 0; i < N; i += len) {
+            std::complex<float> w(1.0f);
+            for (size_t j = 0; j < len / 2; ++j) {
+                auto u = x[i + j], v = x[i + j + len / 2] * w;
+                x[i + j] = u + v;
+                x[i + j + len / 2] = u - v;
+                w *= wlen;
+            }
+        }
+    }
+}
+
+size_t next_pow2(size_t n) {
+    size_t p = 1; while (p < n) p <<= 1; return p;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FFT convolution — O(N log N)
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Single-shot FFT convolution for short signals
+std::vector<float> fft_convolve_short(const float* sig, size_t sig_len,
+                                      const std::vector<std::complex<float>>& H_fft,
+                                      size_t N) {
+    std::vector<std::complex<float>> S(N, {0, 0});
+    for (size_t i = 0; i < sig_len; ++i) S[i] = {sig[i], 0};
+    fft_inplace(S);
+    for (size_t i = 0; i < N; ++i) S[i] *= H_fft[i];
+    for (auto& v : S) v = std::conj(v);
+    fft_inplace(S);
+    float inv = 1.0f / float(N);
+    std::vector<float> out(N);
+    for (size_t i = 0; i < N; ++i) out[i] = std::conj(S[i]).real() * inv;
+    return out;
+}
+
+std::vector<float> fft_convolve(const std::vector<float>& signal,
+                                const std::vector<float>& ir) {
+    if (signal.empty() || ir.empty()) return {};
+
+    // Cap IR length to 30 seconds worth at 96kHz (2.88M samples) — safety
+    const size_t MAX_IR = 96000 * 30;
+    size_t ir_len = std::min(ir.size(), MAX_IR);
+
+    size_t out_len = signal.size() + ir_len - 1;
+
+    // Use overlap-add if total FFT would exceed 2^22 (16M complex = 128MB)
+    constexpr size_t MAX_SINGLE_FFT = 1 << 22;
+    size_t single_N = next_pow2(signal.size() + ir_len - 1);
+
+    if (single_N <= MAX_SINGLE_FFT) {
+        // Small enough for single-shot FFT
+        std::vector<std::complex<float>> S(single_N, {0, 0}), H(single_N, {0, 0});
+        for (size_t i = 0; i < signal.size(); ++i) S[i] = {signal[i], 0};
+        for (size_t i = 0; i < ir_len; ++i)        H[i] = {ir[i], 0};
+        fft_inplace(S);
+        fft_inplace(H);
+        for (size_t i = 0; i < single_N; ++i) S[i] *= H[i];
+        for (auto& v : S) v = std::conj(v);
+        fft_inplace(S);
+        float inv = 1.0f / float(single_N);
+        for (auto& v : S) v = std::conj(v) * inv;
+        std::vector<float> out(out_len);
+        for (size_t i = 0; i < out_len; ++i) out[i] = S[i].real();
+        float mx = 0;
+        for (auto& s : out) mx = std::max(mx, std::abs(s));
+        if (mx > 0) for (auto& s : out) s /= mx;
+        return out;
+    }
+
+    // Overlap-add: process signal in blocks to keep FFT size manageable
+    // Block size chosen so block + IR fits in MAX_SINGLE_FFT
+    size_t block_size = MAX_SINGLE_FFT - ir_len;
+    size_t N = next_pow2(block_size + ir_len - 1);  // FFT size per block
+
+    // Pre-compute IR FFT once
+    std::vector<std::complex<float>> H(N, {0, 0});
+    for (size_t i = 0; i < ir_len; ++i) H[i] = {ir[i], 0};
+    fft_inplace(H);
+
+    std::vector<float> out(out_len, 0.0f);
+
+    for (size_t offset = 0; offset < signal.size(); offset += block_size) {
+        size_t this_block = std::min(block_size, signal.size() - offset);
+        auto block_out = fft_convolve_short(signal.data() + offset, this_block, H, N);
+        // Overlap-add into output
+        size_t add_len = std::min(this_block + ir_len - 1, out_len - offset);
+        for (size_t i = 0; i < add_len; ++i)
+            out[offset + i] += block_out[i];
+    }
+
+    // Peak-normalize
+    float mx = 0;
+    for (auto& s : out) mx = std::max(mx, std::abs(s));
+    if (mx > 0) for (auto& s : out) s /= mx;
+    return out;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Acoustic metrics (ISO 3382)
+// ═════════════════════════════════════════════════════════════════════════════
+
+AcousticMetrics computeMetrics(const std::vector<float>& ir, double sr) {
+    AcousticMetrics m;
+    if (ir.empty()) return m;
+    std::vector<double> energy(ir.size());
+    double total = 0;
+    for (size_t i = 0; i < ir.size(); ++i) {
+        energy[i] = double(ir[i]) * double(ir[i]);
+        total += energy[i];
+    }
+    if (total <= 0) return m;
+
+    // Schroeder backward integration
+    std::vector<double> edc(ir.size());
+    edc.back() = energy.back();
+    for (int i = int(ir.size()) - 2; i >= 0; --i)
+        edc[i] = edc[i + 1] + energy[i];
+    double peak = edc[0];
+
+    // RT60 (T20: -5 to -25 dB, ×3)
+    int idx_5 = -1, idx_25 = -1;
+    for (size_t i = 0; i < edc.size(); ++i) {
+        double db = 10.0 * std::log10(edc[i] / peak);
+        if (idx_5 < 0 && db <= -5.0) idx_5 = int(i);
+        if (idx_25 < 0 && db <= -25.0) { idx_25 = int(i); break; }
+    }
+    if (idx_5 >= 0 && idx_25 > idx_5)
+        m.rt60 = double(idx_25 - idx_5) / sr * 3.0;
+
+    // EDT (0 to -10 dB, extrapolated to -60)
+    int idx_10 = -1;
+    for (size_t i = 0; i < edc.size(); ++i) {
+        double db = 10.0 * std::log10(edc[i] / peak);
+        if (db <= -10.0) { idx_10 = int(i); break; }
+    }
+    if (idx_10 > 0) m.edt = double(idx_10) / sr * 6.0;
+
+    // C80 (Clarity 80 ms)
+    int n80 = int(0.080 * sr);
+    if (n80 > 0 && n80 < int(ir.size())) {
+        double early = 0, late = 0;
+        for (int i = 0; i < n80; ++i) early += energy[i];
+        for (size_t i = n80; i < ir.size(); ++i) late += energy[i];
+        if (late > 0) m.c80 = 10.0 * std::log10(early / late);
+    }
+
+    // C50
+    int n50 = int(0.050 * sr);
+    if (n50 > 0 && n50 < int(ir.size())) {
+        double early = 0, late = 0;
+        for (int i = 0; i < n50; ++i) early += energy[i];
+        for (size_t i = n50; i < ir.size(); ++i) late += energy[i];
+        if (late > 0) m.c50 = 10.0 * std::log10(early / late);
+    }
+
+    // D50 (Definition %)
+    if (n50 > 0 && n50 < int(ir.size())) {
+        double early = 0;
+        for (int i = 0; i < n50; ++i) early += energy[i];
+        m.d50 = early / total * 100.0;
+    }
+
+    return m;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Spectrogram computation (dynamic frequency cap + adaptive hop)
+// ═════════════════════════════════════════════════════════════════════════════
+
+struct SpectrogramResult {
+    Image image;
+    double max_freq;
+};
+
+SpectrogramResult compute_spectrogram(const std::vector<float>& data, double sr,
+                                      float db_floor = -80.0f) {
+    const int fft_size = 1024;
+    const int half = fft_size / 2;
+    double nyquist = sr * 0.5;
+
+    if ((int)data.size() < fft_size)
+        return {Image(Image::RGB, 1, 1, true), nyquist};
+
+    // Adaptive hop to limit max frames for performance
+    const int max_frames = 2000;
+    int hop = 256;
+    if ((int(data.size()) - fft_size) / hop > max_frames)
+        hop = std::max(256, (int(data.size()) - fft_size) / max_frames);
+    const int n_frames = std::max(1, (int(data.size()) - fft_size) / hop + 1);
+
+    // Hann window
+    std::vector<float> win(fft_size);
+    for (int i = 0; i < fft_size; ++i)
+        win[i] = 0.5f * (1.0f - std::cos(2.0f * float(M_PI) * i / (fft_size - 1)));
+
+    std::vector<std::vector<float>> mag_db(n_frames, std::vector<float>(half, db_floor));
+    for (int f = 0; f < n_frames; ++f) {
+        std::vector<std::complex<float>> buf(fft_size);
+        int offset = f * hop;
+        for (int i = 0; i < fft_size; ++i)
+            buf[i] = {data[offset + i] * win[i], 0.0f};
+        fft_inplace(buf);
+        for (int i = 0; i < half; ++i) {
+            float mag = std::abs(buf[i]) / float(fft_size);
+            mag_db[f][i] = 20.0f * std::log10(std::max(mag, 1e-10f));
+        }
+    }
+
+    // Find global max for normalization
+    float global_max = db_floor;
+    for (auto& fr : mag_db)
+        for (auto v : fr) global_max = std::max(global_max, v);
+
+    // Dynamic frequency cap: find highest bin with energy above noise floor
+    float thresh = db_floor + 12.0f;
+    int max_bin = half;
+    for (int b = half - 1; b >= 0; --b) {
+        for (int f = 0; f < n_frames; ++f) {
+            if (mag_db[f][b] > thresh) { max_bin = b + 1; goto found; }
+        }
+    }
+    found:
+    // Round up to nice frequency
+    double raw_max = double(max_bin) / half * nyquist;
+    double nice[] = {4000, 6000, 8000, 10000, 12000, 16000, 20000};
+    double eff_max = nyquist;
+    for (double nf : nice) { if (nf >= raw_max) { eff_max = nf; break; } }
+    eff_max = std::min(eff_max, nyquist);
+    int display_bins = std::max(1, int(eff_max / nyquist * half));
+
+    // Build image
+    Image img(Image::RGB, n_frames, display_bins, true);
+    for (int f = 0; f < n_frames; ++f) {
+        for (int b = 0; b < display_bins; ++b) {
+            float db = mag_db[f][b];
+            float t = (db - db_floor) / (global_max - db_floor);
+            t = juce::jlimit(0.0f, 1.0f, t);
+            img.setPixelAt(f, display_bins - 1 - b, inferno(t));
+        }
+    }
+    return {img, eff_max};
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Axis drawing helpers
+// ═════════════════════════════════════════════════════════════════════════════
+
+Rectangle<int> plotArea(const Rectangle<int>& bounds) {
+    return {bounds.getX() + axis::left, bounds.getY() + axis::top,
+            bounds.getWidth() - axis::left - axis::right,
+            bounds.getHeight() - axis::top - axis::bottom};
+}
+
+double chooseTickSpacing(double duration) {
+    if (duration <= 0) return 0.1;
+    double nice[] = {0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60};
+    double target = duration / 10.0;
+    for (double n : nice) if (n >= target) return n;
+    return 60.0;
+}
+
+String formatTime(double s) {
+    if (s < 60) return String(s, 1) + "s";
+    int m = int(s) / 60;
+    int sec = int(s) % 60;
+    return String(m) + ":" + String(sec).paddedLeft('0', 2);
+}
+
+void drawTimeAxis(Graphics& g, const Rectangle<int>& plot, double dur) {
+    if (dur <= 0) return;
+    double tick = chooseTickSpacing(dur);
+    g.setFont(9.0f);
+    for (double t = 0; t <= dur + tick * 0.01; t += tick) {
+        float x = plot.getX() + float(t / dur) * plot.getWidth();
+        if (x > plot.getRight() + 1) break;
+        g.setColour(wv_theme::text_dim);
+        g.drawVerticalLine(int(x), float(plot.getBottom()), float(plot.getBottom() + 3));
+        String label = (tick >= 1.0) ? String(int(t + 0.5)) + "s"
+                                     : String(t, (tick < 0.1 ? 2 : 1)) + "s";
+        g.drawText(label, int(x) - 18, plot.getBottom() + 3, 36, 13,
+                   Justification::centred);
+    }
+}
+
+void drawFreqAxisLinear(Graphics& g, const Rectangle<int>& plot, double maxFreq) {
+    if (maxFreq <= 0) return;
+    g.setFont(9.0f);
+    std::vector<float> ticks;
+    if (maxFreq <= 5000) ticks = {500, 1000, 2000, 3000, 4000};
+    else if (maxFreq <= 10000) ticks = {1000, 2000, 5000, 8000};
+    else ticks = {1000, 2000, 5000, 10000, 15000, 20000};
+
+    for (float f : ticks) {
+        if (f >= maxFreq) continue;
+        float yFrac = 1.0f - float(f / maxFreq);
+        int y = plot.getY() + int(yFrac * plot.getHeight());
+        g.setColour(wv_theme::grid.withAlpha(0.25f));
+        g.drawHorizontalLine(y, float(plot.getX()), float(plot.getRight()));
+        g.setColour(wv_theme::text_dim);
+        String label = (f >= 1000) ? String(int(f / 1000)) + "k" : String(int(f));
+        g.drawText(label, plot.getX() - axis::left, y - 6, axis::left - 4, 12,
+                   Justification::centredRight);
+    }
+}
+
+void drawFreqAxisLog(Graphics& g, const Rectangle<int>& plot,
+                     float f_min, float f_max) {
+    float log_min = std::log10(f_min), log_max = std::log10(f_max);
+    g.setFont(9.0f);
+    struct FT { float f; const char* l; };
+    FT ticks[] = {{20,"20"},{50,"50"},{100,"100"},{200,"200"},{500,"500"},
+                  {1000,"1k"},{2000,"2k"},{5000,"5k"},{10000,"10k"},{20000,"20k"}};
+    for (auto& ft : ticks) {
+        if (ft.f < f_min || ft.f > f_max) continue;
+        float x = plot.getX() + (std::log10(ft.f) - log_min) / (log_max - log_min)
+                  * plot.getWidth();
+        g.setColour(wv_theme::grid.withAlpha(0.25f));
+        g.drawVerticalLine(int(x), float(plot.getY()), float(plot.getBottom()));
+        g.setColour(wv_theme::text_dim);
+        g.drawVerticalLine(int(x), float(plot.getBottom()), float(plot.getBottom() + 3));
+        g.drawText(ft.l, int(x) - 16, plot.getBottom() + 3, 32, 13,
+                   Justification::centred);
+    }
+}
+
+void drawDbAxis(Graphics& g, const Rectangle<int>& plot,
+                float db_min, float db_max, float step = 10.0f) {
+    g.setFont(9.0f);
+    for (float db = db_min; db <= db_max + 0.1f; db += step) {
+        float y = plot.getY() + (1.0f - (db - db_min) / (db_max - db_min))
+                  * plot.getHeight();
+        g.setColour(wv_theme::grid.withAlpha(0.25f));
+        g.drawHorizontalLine(int(y), float(plot.getX()), float(plot.getRight()));
+        g.setColour(wv_theme::text_dim);
+        g.drawText(String(int(db)), plot.getX() - axis::left, int(y) - 6,
+                   axis::left - 4, 12, Justification::centredRight);
+    }
+}
+
+void drawAmpAxis(Graphics& g, const Rectangle<int>& plot) {
+    g.setFont(9.0f);
+    float mid = plot.getY() + plot.getHeight() * 0.5f;
+    g.setColour(wv_theme::grid);
+    g.drawHorizontalLine(int(mid), float(plot.getX()), float(plot.getRight()));
+    g.setColour(wv_theme::text_dim);
+    g.drawText("+1", plot.getX() - axis::left, plot.getY() - 6,
+               axis::left - 4, 12, Justification::centredRight);
+    g.drawText("0", plot.getX() - axis::left, int(mid) - 6,
+               axis::left - 4, 12, Justification::centredRight);
+    g.drawText("-1", plot.getX() - axis::left, plot.getBottom() - 6,
+               axis::left - 4, 12, Justification::centredRight);
+}
+
+void styleBtn(TextButton& btn, Colour bg, Colour fg) {
+    btn.setColour(TextButton::buttonColourId, bg);
+    btn.setColour(TextButton::textColourOffId, fg);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Air absorption filter — gentle HF rolloff to reduce metallic artifacts
+// ═════════════════════════════════════════════════════════════════════════════
+
+// 2nd-order Butterworth low-pass applied to late portion of IR.
+// This simulates air absorption and reduces harsh metallic ringing
+// from coherent raytracer reflections.
+void apply_air_absorption(std::vector<float>& ir, double sr) {
+    if (ir.empty() || sr <= 0) return;
+
+    // Cutoff at 10 kHz — high enough to preserve brightness,
+    // low enough to tame metallic artifacts.
+    double fc = 10000.0;
+    if (fc >= sr * 0.49) fc = sr * 0.49;
+
+    // Butterworth 2nd-order coefficients
+    double w0 = 2.0 * M_PI * fc / sr;
+    double cosw0 = std::cos(w0);
+    double sinw0 = std::sin(w0);
+    double alpha = sinw0 / std::sqrt(2.0);  // Q = 1/sqrt(2)
+
+    double b0 = (1.0 - cosw0) / 2.0;
+    double b1 = 1.0 - cosw0;
+    double b2 = (1.0 - cosw0) / 2.0;
+    double a0 = 1.0 + alpha;
+    double a1 = -2.0 * cosw0;
+    double a2 = 1.0 - alpha;
+
+    // Normalize
+    b0 /= a0; b1 /= a0; b2 /= a0;
+    a1 /= a0; a2 /= a0;
+
+    // Only filter the late part of the IR (after the direct sound).
+    // The first 5ms stays untouched to preserve the attack transient.
+    size_t onset = std::min(ir.size(), size_t(sr * 0.005));
+
+    double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+
+    // Prime the filter with the onset samples (don't modify them)
+    for (size_t i = 0; i < onset && i < ir.size(); ++i) {
+        double x0 = ir[i];
+        double y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+        x2 = x1; x1 = x0;
+        y2 = y1; y1 = y0;
+    }
+
+    // Apply filter to the late part with crossfade
+    size_t fade_len = std::min(size_t(sr * 0.002), ir.size() - onset);
+    for (size_t i = onset; i < ir.size(); ++i) {
+        double x0 = ir[i];
+        double y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+        x2 = x1; x1 = x0;
+        y2 = y1; y1 = y0;
+
+        if (i < onset + fade_len) {
+            // Crossfade from dry to filtered over 2ms
+            double t = double(i - onset) / fade_len;
+            ir[i] = float(x0 * (1.0 - t) + y0 * t);
+        } else {
+            ir[i] = float(y0);
+        }
+    }
+}
+
+// Common zoom/pan mouse helpers for all plot components
+void handlePlotWheel(Component& c, PlotZoom& z, const MouseEvent& e,
+                     const MouseWheelDetails& w) {
+    auto plot = plotArea(c.getLocalBounds());
+    if (!plot.contains(e.getPosition())) return;
+    double cx = double(e.x - plot.getX()) / plot.getWidth();
+    double cy = double(e.y - plot.getY()) / plot.getHeight();
+    // Map cursor to zoom space
+    cx = z.x0 + cx * (z.x1 - z.x0);
+    cy = z.y0 + cy * (z.y1 - z.y0);
+    double factor = (w.deltaY > 0) ? 0.8 : 1.25;
+    if (e.mods.isShiftDown())
+        z.zoomY(cy, factor);
+    else
+        z.zoomX(cx, factor);
+    c.repaint();
+}
+
+void handlePlotDragStart(Point<float>& drag_start, const MouseEvent& e) {
+    drag_start = e.position;
+}
+
+void handlePlotDrag(Component& c, PlotZoom& z, Point<float>& drag_start,
+                    const MouseEvent& e) {
+    auto plot = plotArea(c.getLocalBounds());
+    float dx = e.position.x - drag_start.x;
+    float dy = e.position.y - drag_start.y;
+    drag_start = e.position;
+    z.panX(-double(dx) / plot.getWidth() * (z.x1 - z.x0));
+    z.panY(-double(dy) / plot.getHeight() * (z.y1 - z.y0));
+    c.repaint();
+}
+
+void handlePlotDoubleClick(Component& c, PlotZoom& z) {
+    z.reset();
+    c.repaint();
+}
+
+}  // namespace
+
+////////////////////////////////////////////////////////////////////////////////
+// WaveformDisplay
+////////////////////////////////////////////////////////////////////////////////
+
+void WaveformDisplay::setData(const std::vector<float>& data, double sr,
+                              const String& label) {
+    data_ = data; sample_rate_ = sr; label_ = label; repaint();
+}
+
+void WaveformDisplay::paint(Graphics& g) {
+    g.fillAll(wv_theme::bg_plot);
+    auto plot = plotArea(getLocalBounds());
+    g.setColour(wv_theme::text); g.setFont(11.0f);
+    g.drawText(label_, plot.getX(), getLocalBounds().getY() + 2,
+               plot.getWidth(), axis::top - 2, Justification::centredLeft);
+    if (data_.empty()) {
+        g.setColour(wv_theme::text_dim);
+        g.drawText("No data", plot, Justification::centred);
+        return;
+    }
+    // Compute visible time range from zoom state
+    double total_dur = data_.size() / sample_rate_;
+    double vis_t0 = zoom_.x0 * total_dur;
+    double vis_t1 = zoom_.x1 * total_dur;
+    drawAmpAxis(g, plot);
+    drawTimeAxis(g, plot, vis_t1 - vis_t0);
+    g.setColour(wv_theme::grid); g.drawRect(plot);
+
+    // Visible sample range
+    size_t N = data_.size();
+    size_t s0 = size_t(zoom_.x0 * N);
+    size_t s1 = std::min(size_t(zoom_.x1 * N), N);
+    if (s0 >= s1) s1 = std::min(s0 + 1, N);
+    size_t visN = s1 - s0;
+
+    float peak = 0;
+    for (size_t i = s0; i < s1; ++i) peak = std::max(peak, std::abs(data_[i]));
+    if (peak == 0) peak = 1;
+    float midY = plot.getY() + plot.getHeight() * 0.5f;
+    float halfH = plot.getHeight() * 0.5f - 2.0f;
+
+    int pw = plot.getWidth();
+
+    // Min/max envelope rendering — fill between extremes per pixel column
+    Path envTop, envBot;
+    for (int px = 0; px < pw; ++px) {
+        size_t i0 = s0 + size_t(double(px) / pw * visN);
+        size_t i1 = s0 + size_t(double(px + 1) / pw * visN);
+        i1 = std::min(i1, s1);
+        if (i0 >= s1) break;
+        if (i1 <= i0) i1 = i0 + 1;
+        float lo = data_[i0], hi = data_[i0];
+        for (size_t i = i0 + 1; i < i1; ++i) {
+            lo = std::min(lo, data_[i]);
+            hi = std::max(hi, data_[i]);
+        }
+        float yHi = midY - (hi / peak) * halfH;
+        float yLo = midY - (lo / peak) * halfH;
+        float x = float(plot.getX() + px);
+        if (px == 0) { envTop.startNewSubPath(x, yHi); envBot.startNewSubPath(x, yLo); }
+        else         { envTop.lineTo(x, yHi);           envBot.lineTo(x, yLo); }
+    }
+
+    // Draw filled envelope
+    Path envelope(envTop);
+    for (int px = pw - 1; px >= 0; --px) {
+        size_t i0 = s0 + size_t(double(px) / pw * visN);
+        size_t i1 = s0 + size_t(double(px + 1) / pw * visN);
+        i1 = std::min(i1, s1);
+        if (i0 >= s1) continue;
+        if (i1 <= i0) i1 = i0 + 1;
+        float lo = data_[i0];
+        for (size_t i = i0 + 1; i < i1; ++i)
+            lo = std::min(lo, data_[i]);
+        float yLo = midY - (lo / peak) * halfH;
+        envelope.lineTo(float(plot.getX() + px), yLo);
+    }
+    envelope.closeSubPath();
+
+    g.setColour(wv_theme::cyan.withAlpha(0.25f));
+    g.fillPath(envelope);
+    g.setColour(wv_theme::cyan);
+    g.strokePath(envTop, PathStrokeType(1.0f));
+    g.strokePath(envBot, PathStrokeType(1.0f));
+}
+
+void WaveformDisplay::mouseWheelMove(const MouseEvent& e, const MouseWheelDetails& w) {
+    handlePlotWheel(*this, zoom_, e, w);
+}
+void WaveformDisplay::mouseDown(const MouseEvent& e) {
+    handlePlotDragStart(drag_start_, e);
+}
+void WaveformDisplay::mouseDrag(const MouseEvent& e) {
+    handlePlotDrag(*this, zoom_, drag_start_, e);
+}
+void WaveformDisplay::mouseDoubleClick(const MouseEvent&) {
+    handlePlotDoubleClick(*this, zoom_);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// SpectrumDisplay (peak-normalized)
+////////////////////////////////////////////////////////////////////////////////
+
+void SpectrumDisplay::setData(const std::vector<float>& data, double sr) {
+    sample_rate_ = sr;
+    if (data.empty()) { magnitudes_db_.clear(); freq_axis_.clear(); repaint(); return; }
+    size_t N = next_pow2(std::max(data.size(), size_t(4096)));
+    std::vector<std::complex<float>> fd(N, {0, 0});
+    for (size_t i = 0; i < data.size(); ++i) fd[i] = {data[i], 0};
+    fft_inplace(fd);
+    size_t half = N / 2;
+    magnitudes_db_.resize(half);
+    freq_axis_.resize(half);
+    for (size_t i = 0; i < half; ++i) {
+        float mag = std::abs(fd[i]) / float(N);
+        magnitudes_db_[i] = 20.0f * std::log10(std::max(mag, 1e-10f));
+        freq_axis_[i] = float(i) * float(sr) / float(N);
+    }
+    // Peak-normalize so shape is visible regardless of IR amplitude
+    float maxDb = -999.0f;
+    for (auto m : magnitudes_db_) maxDb = std::max(maxDb, m);
+    for (auto& m : magnitudes_db_) m -= maxDb;
+    repaint();
+}
+
+void SpectrumDisplay::paint(Graphics& g) {
+    g.fillAll(wv_theme::bg_plot);
+    auto plot = plotArea(getLocalBounds());
+    g.setColour(wv_theme::text); g.setFont(11.0f);
+    g.drawText("Frequency Response (dB)", plot.getX(), getLocalBounds().getY() + 2,
+               plot.getWidth(), axis::top - 2, Justification::centredLeft);
+    if (magnitudes_db_.empty()) {
+        g.setColour(wv_theme::text_dim);
+        g.drawText("No spectrum data", plot, Justification::centred); return;
+    }
+    float db_full_min = -80, db_full_max = 0;
+    float f_full_min = 20, f_full_max = float(sample_rate_) * 0.5f;
+    float log_full_min = std::log10(f_full_min), log_full_max = std::log10(f_full_max);
+
+    // Apply zoom to freq and dB ranges
+    float vis_log_min = log_full_min + float(zoom_.x0) * (log_full_max - log_full_min);
+    float vis_log_max = log_full_min + float(zoom_.x1) * (log_full_max - log_full_min);
+    float vis_f_min = std::pow(10.0f, vis_log_min);
+    float vis_f_max = std::pow(10.0f, vis_log_max);
+    float db_range = db_full_max - db_full_min;
+    float vis_db_min = db_full_min + float(zoom_.y0) * db_range;
+    float vis_db_max = db_full_min + float(zoom_.y1) * db_range;
+
+    drawDbAxis(g, plot, vis_db_min, vis_db_max);
+    drawFreqAxisLog(g, plot, vis_f_min, vis_f_max);
+    g.setColour(wv_theme::grid); g.drawRect(plot);
+
+    g.setColour(wv_theme::orange);
+    g.saveState();
+    g.reduceClipRegion(plot);
+    Path path; bool started = false;
+    for (size_t i = 1; i < magnitudes_db_.size(); ++i) {
+        if (freq_axis_[i] < vis_f_min * 0.5f || freq_axis_[i] > vis_f_max * 2.0f) continue;
+        float x = plot.getX() + (std::log10(freq_axis_[i]) - vis_log_min) /
+                  (vis_log_max - vis_log_min) * plot.getWidth();
+        float db = magnitudes_db_[i];
+        float y = plot.getY() + (1.0f - (db - vis_db_min) / (vis_db_max - vis_db_min))
+                  * plot.getHeight();
+        if (!started) { path.startNewSubPath(x, y); started = true; }
+        else path.lineTo(x, y);
+    }
+    g.strokePath(path, PathStrokeType(1.5f));
+    g.restoreState();
+}
+
+void SpectrumDisplay::mouseWheelMove(const MouseEvent& e, const MouseWheelDetails& w) {
+    handlePlotWheel(*this, zoom_, e, w);
+}
+void SpectrumDisplay::mouseDown(const MouseEvent& e) {
+    handlePlotDragStart(drag_start_, e);
+}
+void SpectrumDisplay::mouseDrag(const MouseEvent& e) {
+    handlePlotDrag(*this, zoom_, drag_start_, e);
+}
+void SpectrumDisplay::mouseDoubleClick(const MouseEvent&) {
+    handlePlotDoubleClick(*this, zoom_);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// SpectrogramDisplay (dynamic freq cap)
+////////////////////////////////////////////////////////////////////////////////
+
+void SpectrogramDisplay::setData(const std::vector<float>& data, double sr) {
+    duration_ = data.empty() ? 0.0 : data.size() / sr;
+    auto result = compute_spectrogram(data, sr);
+    image_ = result.image;
+    max_freq_ = result.max_freq;
+    repaint();
+}
+
+void SpectrogramDisplay::paint(Graphics& g) {
+    g.fillAll(wv_theme::bg_plot);
+    auto plot = plotArea(getLocalBounds());
+    g.setColour(wv_theme::text); g.setFont(11.0f);
+    g.drawText("Spectrogram", plot.getX(), getLocalBounds().getY() + 2,
+               plot.getWidth(), axis::top - 2, Justification::centredLeft);
+    if (image_.isNull() || image_.getWidth() <= 1) {
+        g.setColour(wv_theme::text_dim);
+        g.drawText("No spectrogram data", plot, Justification::centred); return;
+    }
+    // Draw zoomed sub-region of spectrogram image
+    int iw = image_.getWidth(), ih = image_.getHeight();
+    int sx = int(zoom_.x0 * iw);
+    int sy = int(zoom_.y0 * ih);
+    int sw = std::max(1, int((zoom_.x1 - zoom_.x0) * iw));
+    int sh = std::max(1, int((zoom_.y1 - zoom_.y0) * ih));
+    g.drawImage(image_,
+                plot.getX(), plot.getY(), plot.getWidth(), plot.getHeight(),
+                sx, sy, sw, sh);
+    g.setColour(wv_theme::grid); g.drawRect(plot);
+    double vis_dur = (zoom_.x1 - zoom_.x0) * duration_;
+    drawTimeAxis(g, plot, vis_dur);
+    double vis_max_freq = max_freq_ * (zoom_.y1 - zoom_.y0);
+    drawFreqAxisLinear(g, plot, vis_max_freq);
+}
+
+void SpectrogramDisplay::mouseWheelMove(const MouseEvent& e, const MouseWheelDetails& w) {
+    handlePlotWheel(*this, zoom_, e, w);
+}
+void SpectrogramDisplay::mouseDown(const MouseEvent& e) {
+    handlePlotDragStart(drag_start_, e);
+}
+void SpectrogramDisplay::mouseDrag(const MouseEvent& e) {
+    handlePlotDrag(*this, zoom_, drag_start_, e);
+}
+void SpectrogramDisplay::mouseDoubleClick(const MouseEvent&) {
+    handlePlotDoubleClick(*this, zoom_);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// SchroederDisplay
+////////////////////////////////////////////////////////////////////////////////
+
+void SchroederDisplay::setData(const std::vector<float>& ir, double sr) {
+    sample_rate_ = sr;
+    if (ir.empty()) { edc_db_.clear(); repaint(); return; }
+    duration_ = ir.size() / sr;
+    std::vector<double> energy(ir.size());
+    for (size_t i = 0; i < ir.size(); ++i)
+        energy[i] = double(ir[i]) * double(ir[i]);
+    std::vector<double> edc(ir.size());
+    edc.back() = energy.back();
+    for (int i = int(ir.size()) - 2; i >= 0; --i)
+        edc[i] = edc[i + 1] + energy[i];
+    double peak = edc[0];
+    edc_db_.resize(ir.size());
+    for (size_t i = 0; i < ir.size(); ++i)
+        edc_db_[i] = (edc[i] > 0 && peak > 0) ?
+            10.0 * std::log10(edc[i] / peak) : -60.0;
+    repaint();
+}
+
+void SchroederDisplay::paint(Graphics& g) {
+    g.fillAll(wv_theme::bg_plot);
+    auto plot = plotArea(getLocalBounds());
+    g.setColour(wv_theme::text); g.setFont(11.0f);
+    g.drawText("Energy Decay Curve", plot.getX(), getLocalBounds().getY() + 2,
+               plot.getWidth(), axis::top - 2, Justification::centredLeft);
+    if (edc_db_.empty()) {
+        g.setColour(wv_theme::text_dim);
+        g.drawText("No data", plot, Justification::centred); return;
+    }
+    float db_full_min = -60, db_full_max = 0;
+    float db_range = db_full_max - db_full_min;
+    float vis_db_min = db_full_min + float(zoom_.y0) * db_range;
+    float vis_db_max = db_full_min + float(zoom_.y1) * db_range;
+    double vis_t0 = zoom_.x0 * duration_;
+    double vis_t1 = zoom_.x1 * duration_;
+    drawDbAxis(g, plot, vis_db_min, vis_db_max);
+    drawTimeAxis(g, plot, vis_t1 - vis_t0);
+    g.setColour(wv_theme::grid); g.drawRect(plot);
+
+    // Dashed reference lines at -5 and -25 dB (T20 regression bounds)
+    g.saveState();
+    g.reduceClipRegion(plot);
+    for (float ref : {-5.0f, -25.0f}) {
+        float y = plot.getY() + (1.0f - (ref - vis_db_min) / (vis_db_max - vis_db_min))
+                  * plot.getHeight();
+        g.setColour(wv_theme::emphasis.withAlpha(0.5f));
+        float dashes[] = {4.0f, 4.0f};
+        g.drawDashedLine(Line<float>(float(plot.getX()), y,
+                                     float(plot.getRight()), y),
+                         dashes, 2, 1.0f);
+    }
+
+    // EDC curve — visible sample range
+    size_t N = edc_db_.size();
+    size_t s0 = size_t(zoom_.x0 * N);
+    size_t s1 = std::min(size_t(zoom_.x1 * N), N);
+    if (s0 >= s1) s1 = std::min(s0 + 1, N);
+    size_t visN = s1 - s0;
+
+    g.setColour(wv_theme::green);
+    Path path;
+    int pw = plot.getWidth();
+    for (int px = 0; px < pw; ++px) {
+        size_t idx = s0 + size_t(double(px) / pw * visN);
+        if (idx >= s1) break;
+        float db = float(juce::jlimit(double(vis_db_min), double(vis_db_max), edc_db_[idx]));
+        float y = plot.getY() + (1.0f - (db - vis_db_min) / (vis_db_max - vis_db_min))
+                  * plot.getHeight();
+        if (px == 0) path.startNewSubPath(float(plot.getX()), y);
+        else path.lineTo(float(plot.getX() + px), y);
+    }
+    g.strokePath(path, PathStrokeType(1.5f));
+    g.restoreState();
+}
+
+void SchroederDisplay::mouseWheelMove(const MouseEvent& e, const MouseWheelDetails& w) {
+    handlePlotWheel(*this, zoom_, e, w);
+}
+void SchroederDisplay::mouseDown(const MouseEvent& e) {
+    handlePlotDragStart(drag_start_, e);
+}
+void SchroederDisplay::mouseDrag(const MouseEvent& e) {
+    handlePlotDrag(*this, zoom_, drag_start_, e);
+}
+void SchroederDisplay::mouseDoubleClick(const MouseEvent&) {
+    handlePlotDoubleClick(*this, zoom_);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// TransportBar
+////////////////////////////////////////////////////////////////////////////////
+
+TransportBar::TransportBar(AudioTransportSource& transport)
+        : transport_(transport) {
+    scrubber_.setSliderStyle(Slider::LinearHorizontal);
+    scrubber_.setTextBoxStyle(Slider::NoTextBox, true, 0, 0);
+    scrubber_.setRange(0, 1.0, 0.001);
+    scrubber_.setColour(Slider::backgroundColourId, wv_theme::bg_panel);
+    scrubber_.setColour(Slider::trackColourId, wv_theme::emphasis);
+    scrubber_.setColour(Slider::thumbColourId, wv_theme::cyan);
+    scrubber_.addListener(this);
+    addAndMakeVisible(scrubber_);
+
+    elapsed_.setFont(Font(12.0f));
+    elapsed_.setColour(Label::textColourId, wv_theme::text);
+    elapsed_.setText("0:00", dontSendNotification);
+    addAndMakeVisible(elapsed_);
+
+    total_.setFont(Font(12.0f));
+    total_.setColour(Label::textColourId, wv_theme::text_dim);
+    total_.setText("0:00", dontSendNotification);
+    addAndMakeVisible(total_);
+
+    startTimerHz(20);
+}
+
+TransportBar::~TransportBar() { stopTimer(); }
+
+void TransportBar::setTotalLength(double seconds) {
+    total_seconds_ = seconds;
+    scrubber_.setRange(0, std::max(0.01, seconds), 0.01);
+    total_.setText(formatTime(seconds), dontSendNotification);
+}
+
+void TransportBar::resized() {
+    auto area = getLocalBounds();
+    elapsed_.setBounds(area.removeFromLeft(50));
+    total_.setBounds(area.removeFromRight(50));
+    area.removeFromLeft(4);
+    area.removeFromRight(4);
+    scrubber_.setBounds(area);
+}
+
+void TransportBar::paint(Graphics& g) {
+    g.fillAll(wv_theme::bg_dark);
+}
+
+void TransportBar::sliderValueChanged(Slider*) {
+    if (scrubber_.isMouseButtonDown())
+        transport_.setPosition(scrubber_.getValue());
+}
+
+void TransportBar::timerCallback() {
+    if (!scrubber_.isMouseButtonDown()) {
+        double pos = transport_.getCurrentPosition();
+        scrubber_.setValue(pos, dontSendNotification);
+    }
+    elapsed_.setText(formatTime(transport_.getCurrentPosition()),
+                     dontSendNotification);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// ResultsContent
+////////////////////////////////////////////////////////////////////////////////
+
+ResultsContent::ResultsContent() {
+    // IR analysis: L channel (always visible)
+    addAndMakeVisible(ir_waveform_L_);
+    addAndMakeVisible(schroeder_L_);
+    addAndMakeVisible(ir_spectrogram_L_);
+    addAndMakeVisible(ir_spectrum_L_);
+
+    // IR analysis: R channel (hidden until stereo detected)
+    addChildComponent(ir_waveform_R_);
+    addChildComponent(schroeder_R_);
+    addChildComponent(ir_spectrogram_R_);
+    addChildComponent(ir_spectrum_R_);
+
+    // Comparison components (initially hidden)
+    addChildComponent(dry_waveform_);
+    addChildComponent(dry_spectrogram_);
+    addChildComponent(conv_waveform_L_);
+    addChildComponent(conv_spectrogram_L_);
+    addChildComponent(conv_waveform_R_);
+    addChildComponent(conv_spectrogram_R_);
+
+    // Title & metrics
+    title_label_.setFont(Font(18.0f, Font::bold));
+    title_label_.setColour(Label::textColourId, wv_theme::emphasis);
+    title_label_.setText("", dontSendNotification);
+    title_label_.setVisible(false);
+    addAndMakeVisible(title_label_);
+
+    metrics_label_.setFont(Font(12.0f));
+    metrics_label_.setColour(Label::textColourId, wv_theme::cyan);
+    addAndMakeVisible(metrics_label_);
+
+    // Buttons
+    styleBtn(auralize_btn_, wv_theme::emphasis, Colours::white);
+    styleBtn(play_dry_btn_, wv_theme::bg_panel, wv_theme::green);
+    styleBtn(play_conv_btn_, wv_theme::bg_panel, wv_theme::green);
+    styleBtn(stop_btn_, wv_theme::bg_panel, wv_theme::text);
+
+    play_dry_btn_.setEnabled(false);
+    play_dry_btn_.setAlpha(0.4f);
+    play_conv_btn_.setEnabled(false);
+    play_conv_btn_.setAlpha(0.4f);
+
+    auralize_btn_.addListener(this);
+    play_dry_btn_.addListener(this);
+    play_conv_btn_.addListener(this);
+    stop_btn_.addListener(this);
+    addAndMakeVisible(auralize_btn_);
+    addAndMakeVisible(play_dry_btn_);
+    addAndMakeVisible(play_conv_btn_);
+    addAndMakeVisible(stop_btn_);
+
+    // Playback engine
+    source_player_.setSource(&transport_);
+    device_manager_.addAudioCallback(&source_player_);
+
+    // Transport bar
+    transport_bar_ = std::make_unique<TransportBar>(transport_);
+    addAndMakeVisible(transport_bar_.get());
+}
+
+ResultsContent::~ResultsContent() {
+    transport_.stop();
+    transport_.setSource(nullptr);
+    source_player_.setSource(nullptr);
+    device_manager_.removeAudioCallback(&source_player_);
+}
+
+void ResultsContent::loadFiles(const std::vector<std::string>& paths,
+                               double sampleRate) {
+    sample_rate_ = sampleRate;
+    ir_channels_.clear();
+
+    DefaultAudioFormatManager fmt_mgr;
+    for (const auto& path : paths) {
+        File f(path);
+        if (!f.existsAsFile()) continue;
+        std::unique_ptr<AudioFormatReader> reader(fmt_mgr.createReaderFor(f));
+        if (!reader) continue;
+        int numSamples = int(reader->lengthInSamples);
+        AudioBuffer<float> buf(1, numSamples);
+        reader->read(&buf, 0, numSamples, 0, true, false);
+        ChannelData cd;
+        cd.file_name = f.getFileNameWithoutExtension().toStdString();
+        cd.samples.resize(numSamples);
+        std::memcpy(cd.samples.data(), buf.getReadPointer(0),
+                    numSamples * sizeof(float));
+        sample_rate_ = reader->sampleRate;
+        ir_channels_.push_back(std::move(cd));
+    }
+
+    is_stereo_ = (ir_channels_.size() == 2);
+
+    // ── Left (or mono) channel ──
+    if (!ir_channels_.empty()) {
+        auto& irL = ir_channels_[0].samples;
+        metrics_ = computeMetrics(irL, sample_rate_);
+
+        String mstr;
+        mstr << "RT60: " << String(metrics_.rt60, 2) << "s";
+        mstr << "   EDT: " << String(metrics_.edt, 2) << "s";
+        mstr << "   C80: " << String(metrics_.c80, 1) << " dB";
+        mstr << "   C50: " << String(metrics_.c50, 1) << " dB";
+        mstr << "   D50: " << String(metrics_.d50, 1) << "%";
+        if (is_stereo_) mstr << "   [Binaural L+R]";
+        metrics_label_.setText(mstr, dontSendNotification);
+
+        String lLabel = is_stereo_ ? ("IR Left (" + String(ir_channels_[0].file_name.c_str()) + ")")
+                                   : "Impulse Response";
+        ir_waveform_L_.setData(irL, sample_rate_, lLabel);
+        schroeder_L_.setData(irL, sample_rate_);
+        ir_spectrogram_L_.setData(irL, sample_rate_);
+        ir_spectrum_L_.setData(irL, sample_rate_);
+    }
+
+    // ── Right channel (stereo only) ──
+    if (is_stereo_) {
+        auto& irR = ir_channels_[1].samples;
+        String rLabel = "IR Right (" + String(ir_channels_[1].file_name.c_str()) + ")";
+        ir_waveform_R_.setData(irR, sample_rate_, rLabel);
+        schroeder_R_.setData(irR, sample_rate_);
+        ir_spectrogram_R_.setData(irR, sample_rate_);
+        ir_spectrum_R_.setData(irR, sample_rate_);
+
+        ir_waveform_R_.setVisible(true);
+        schroeder_R_.setVisible(true);
+        ir_spectrogram_R_.setVisible(true);
+        ir_spectrum_R_.setVisible(true);
+    } else {
+        ir_waveform_R_.setVisible(false);
+        schroeder_R_.setVisible(false);
+        ir_spectrogram_R_.setVisible(false);
+        ir_spectrum_R_.setVisible(false);
+    }
+
+    resized();
+}
+
+void ResultsContent::startPlayback(const AudioBuffer<float>& buffer, double sr) {
+    transport_.stop();
+    transport_.setSource(nullptr);
+    buffer_source_.reset();
+    buffer_source_ = std::make_unique<BufferAudioSource>(buffer, sr);
+    transport_.setSource(buffer_source_.get(), 0, nullptr, sr,
+                         buffer.getNumChannels());
+    transport_.setPosition(0.0);
+    transport_bar_->setTotalLength(buffer.getNumSamples() / sr);
+    transport_.start();
+}
+
+void ResultsContent::loadDryAndConvolve() {
+    if (ir_channels_.empty()) return;
+
+    // Determine default folder
+    File defaultDir = File::getSpecialLocation(File::currentExecutableFile)
+                          .getParentDirectory();
+    File testModels = defaultDir.getParentDirectory()
+                          .getChildFile("demo").getChildFile("assets");
+    if (!testModels.isDirectory()) testModels = File();
+
+    FileChooser chooser("Select dry audio file...", testModels,
+                        "*.wav;*.aif;*.aiff;*.flac;*.mp3");
+    if (!chooser.browseForFileToOpen()) return;
+
+    DefaultAudioFormatManager fmt_mgr;
+    auto file = chooser.getResult();
+    std::unique_ptr<AudioFormatReader> reader(fmt_mgr.createReaderFor(file));
+    if (!reader) {
+        AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon,
+                                         "Error", "Could not read audio file.");
+        return;
+    }
+
+    // Read entire file (up to 5 minutes at native rate), preserving all channels.
+    const double dry_native_rate = reader->sampleRate;
+    dry_rate_ = dry_native_rate;
+    const int srcChannels = int(reader->numChannels);
+    int maxSamples = std::min(int(reader->lengthInSamples),
+                               int(dry_native_rate * 300));
+
+    // Read all channels from the file.
+    AudioBuffer<float> tmp(srcChannels, maxSamples);
+    reader->read(&tmp, 0, maxSamples, 0, true, srcChannels > 1);
+
+    // Store left channel for convolution (mono IR convolution uses left).
+    dry_samples_.resize(maxSamples);
+    std::memcpy(dry_samples_.data(), tmp.getReadPointer(0), maxSamples * sizeof(float));
+
+    // Build a STEREO playback buffer so audio plays in both ears.
+    // If source is mono, duplicate to both channels.
+    const int playCh = std::max(srcChannels, 2);
+    dry_buffer_.setSize(playCh, maxSamples);
+    dry_buffer_.copyFrom(0, 0, tmp.getReadPointer(0), maxSamples);
+    if (srcChannels >= 2) {
+        dry_buffer_.copyFrom(1, 0, tmp.getReadPointer(1), maxSamples);
+    } else {
+        // Mono source → duplicate left to right for balanced playback.
+        dry_buffer_.copyFrom(1, 0, tmp.getReadPointer(0), maxSamples);
+    }
+
+    // Resample each IR channel to the dry audio's native rate so that
+    // convolution happens at the dry rate and no quality is lost.
+    // Uses JUCE's LagrangeInterpolator (4-point) for high-quality resampling.
+    const double conv_rate = dry_native_rate;  // convolve & play at dry rate
+    std::vector<std::vector<float>> irs_at_dry_rate;
+    if (std::abs(sample_rate_ - conv_rate) < 1.0) {
+        // Rates match — no resampling needed
+        for (auto& ch : ir_channels_)
+            irs_at_dry_rate.push_back(ch.samples);
+    } else {
+        const double speed_ratio = sample_rate_ / conv_rate;
+        for (auto& ch : ir_channels_) {
+            int out_len = int(ch.samples.size() / speed_ratio) + 16;
+            std::vector<float> resampled(out_len);
+            juce::LagrangeInterpolator interp;
+            int produced = interp.process(speed_ratio,
+                                          ch.samples.data(),
+                                          resampled.data(),
+                                          out_len);
+            resampled.resize(produced);
+            irs_at_dry_rate.push_back(std::move(resampled));
+        }
+    }
+
+    // FFT-convolve dry audio with each resampled IR channel (all at dry rate)
+    std::vector<std::vector<float>> conv_per_ch;
+    for (auto& ir : irs_at_dry_rate)
+        conv_per_ch.push_back(fft_convolve(dry_samples_, ir));
+
+    conv_samples_L_ = conv_per_ch.empty() ? std::vector<float>() : conv_per_ch[0];
+    conv_samples_R_ = (conv_per_ch.size() >= 2) ? conv_per_ch[1] : std::vector<float>();
+
+    // Build convolved playback buffer — always at least stereo so both ears play.
+    int n_ir_ch = int(conv_per_ch.size());
+    int conv_len = conv_per_ch.empty() ? 0 : int(conv_per_ch[0].size());
+    int n_play_ch = std::max(n_ir_ch, 2);
+    conv_buffer_.setSize(n_play_ch, conv_len);
+    if (n_ir_ch >= 2) {
+        // Binaural: L and R from separate IR channels
+        for (int c = 0; c < n_ir_ch; ++c)
+            conv_buffer_.copyFrom(c, 0, conv_per_ch[c].data(), conv_len);
+    } else if (n_ir_ch == 1) {
+        // Mono IR convolution → duplicate to both channels
+        conv_buffer_.copyFrom(0, 0, conv_per_ch[0].data(), conv_len);
+        conv_buffer_.copyFrom(1, 0, conv_per_ch[0].data(), conv_len);
+    }
+
+    has_dry_ = true;
+
+    // Populate comparison displays (all at dry audio's native rate now)
+    dry_waveform_.setData(dry_samples_, dry_rate_, "Dry Audio");
+    dry_spectrogram_.setData(dry_samples_, dry_rate_);
+
+    conv_waveform_L_.setData(conv_samples_L_, dry_rate_,
+                             is_stereo_ ? "Convolved (Left Ear)" : "Convolved");
+    conv_spectrogram_L_.setData(conv_samples_L_, dry_rate_);
+
+    dry_waveform_.setVisible(true);
+    dry_spectrogram_.setVisible(true);
+    conv_waveform_L_.setVisible(true);
+    conv_spectrogram_L_.setVisible(true);
+
+    if (is_stereo_ && !conv_samples_R_.empty()) {
+        conv_waveform_R_.setData(conv_samples_R_, dry_rate_, "Convolved (Right Ear)");
+        conv_spectrogram_R_.setData(conv_samples_R_, dry_rate_);
+        conv_waveform_R_.setVisible(true);
+        conv_spectrogram_R_.setVisible(true);
+    } else {
+        conv_waveform_R_.setVisible(false);
+        conv_spectrogram_R_.setVisible(false);
+    }
+
+    play_dry_btn_.setEnabled(true);
+    play_dry_btn_.setAlpha(1.0f);
+    play_conv_btn_.setEnabled(true);
+    play_conv_btn_.setAlpha(1.0f);
+
+    resized();
+    repaint();
+}
+
+void ResultsContent::buttonClicked(Button* b) {
+    if (b == &auralize_btn_) {
+        loadDryAndConvolve();
+    } else if (b == &play_dry_btn_ && dry_buffer_.getNumSamples() > 0) {
+        startPlayback(dry_buffer_, dry_rate_);
+    } else if (b == &play_conv_btn_ && conv_buffer_.getNumSamples() > 0) {
+        startPlayback(conv_buffer_, dry_rate_);
+    } else if (b == &stop_btn_) {
+        transport_.stop();
+    }
+}
+
+void ResultsContent::paint(Graphics& g) {
+    g.fillAll(wv_theme::bg_dark);
+
+    if (!has_dry_) {
+        auto area = getLocalBounds();
+        int hintY = area.getHeight() - 60;
+        g.setColour(wv_theme::text_dim);
+        g.setFont(13.0f);
+        g.drawText("Click \"Auralize...\" to load dry audio and compare",
+                   0, hintY, area.getWidth(), 20, Justification::centred);
+    }
+}
+
+void ResultsContent::resized() {
+    auto area = getLocalBounds().reduced(10);
+
+    // ── Row 1: Title + metrics ──
+    auto titleRow = area.removeFromTop(22);
+    title_label_.setBounds(titleRow.removeFromLeft(170));
+    titleRow.removeFromLeft(8);
+    metrics_label_.setBounds(titleRow);
+    area.removeFromTop(4);
+
+    // ── Row 2: Buttons + transport ──
+    auto ctrlRow = area.removeFromTop(28);
+    auralize_btn_.setBounds(ctrlRow.removeFromLeft(100));
+    ctrlRow.removeFromLeft(6);
+    play_dry_btn_.setBounds(ctrlRow.removeFromLeft(80));
+    ctrlRow.removeFromLeft(4);
+    play_conv_btn_.setBounds(ctrlRow.removeFromLeft(110));
+    ctrlRow.removeFromLeft(4);
+    stop_btn_.setBounds(ctrlRow.removeFromLeft(50));
+    area.removeFromTop(4);
+
+    // ── Bottom: Transport bar ──
+    auto transportArea = area.removeFromBottom(32);
+    transport_bar_->setBounds(transportArea);
+    area.removeFromBottom(8);
+
+    // ── Remaining space ──
+    int remaining = area.getHeight();
+
+    if (is_stereo_) {
+        // ════════════════════════════════════════════════════════════════
+        // STEREO LAYOUT: L column | R column, each with its own displays
+        // ════════════════════════════════════════════════════════════════
+        if (has_dry_) {
+            // Split: IR section ~45%, comparison ~55%
+            int irH = int(remaining * 0.45);
+            int compH = remaining - irH - 4;
+
+            auto irArea = area.removeFromTop(irH);
+            area.removeFromTop(4);
+            auto compArea = area;
+
+            // IR: 2 columns (L | R), each with 2 rows (waveform+spectrogram, EDC+spectrum)
+            int irColW = (irArea.getWidth() - 4) / 2;
+            int irRowH = (irH - 4) / 2;
+
+            // Left IR column
+            ir_waveform_L_.setBounds(irArea.getX(), irArea.getY(), irColW, irRowH);
+            ir_spectrogram_L_.setBounds(irArea.getX(), irArea.getY() + irRowH + 4,
+                                        irColW, irRowH);
+
+            // Right IR column
+            int rX = irArea.getX() + irColW + 4;
+            ir_waveform_R_.setBounds(rX, irArea.getY(), irColW, irRowH);
+            ir_spectrogram_R_.setBounds(rX, irArea.getY() + irRowH + 4,
+                                        irColW, irRowH);
+
+            // EDC and spectrum share bottom of each column — put them below spectrograms
+            // Actually, for stereo we show waveform+spectrogram per ear in IR,
+            // and put EDC + spectrum in a shared row below.
+            // Better: use scrollable or just show L EDC + R EDC side by side.
+            // For now, hide the individual EDC/spectrum in stereo mode since we have
+            // 4 IR panels + comparison below. Show them only in mono mode.
+            schroeder_L_.setVisible(false);
+            ir_spectrum_L_.setVisible(false);
+            schroeder_R_.setVisible(false);
+            ir_spectrum_R_.setVisible(false);
+
+            // Comparison: 3 columns (dry | conv L | conv R)
+            int compCols = 3;
+            int compColW = (compArea.getWidth() - 4 * (compCols - 1)) / compCols;
+            int compRowH = (compH - 4) / 2;
+
+            // Dry column
+            dry_waveform_.setBounds(compArea.getX(), compArea.getY(),
+                                    compColW, compRowH);
+            dry_spectrogram_.setBounds(compArea.getX(),
+                                       compArea.getY() + compRowH + 4,
+                                       compColW, compRowH);
+
+            // Convolved L column
+            int cLx = compArea.getX() + compColW + 4;
+            conv_waveform_L_.setBounds(cLx, compArea.getY(), compColW, compRowH);
+            conv_spectrogram_L_.setBounds(cLx, compArea.getY() + compRowH + 4,
+                                          compColW, compRowH);
+
+            // Convolved R column
+            int cRx = cLx + compColW + 4;
+            conv_waveform_R_.setBounds(cRx, compArea.getY(), compColW, compRowH);
+            conv_spectrogram_R_.setBounds(cRx, compArea.getY() + compRowH + 4,
+                                          compColW, compRowH);
+        } else {
+            // No dry audio yet: show L/R IR analysis in 2×2 grid per channel
+            int irColW = (area.getWidth() - 4) / 2;
+            int irRowH = (remaining - 4) / 2;
+
+            // Left: waveform + spectrogram
+            ir_waveform_L_.setBounds(area.getX(), area.getY(), irColW, irRowH);
+            ir_spectrogram_L_.setBounds(area.getX(), area.getY() + irRowH + 4,
+                                        irColW, irRowH);
+
+            // Right: waveform + spectrogram
+            int rX = area.getX() + irColW + 4;
+            ir_waveform_R_.setBounds(rX, area.getY(), irColW, irRowH);
+            ir_spectrogram_R_.setBounds(rX, area.getY() + irRowH + 4,
+                                        irColW, irRowH);
+
+            // Hide EDC/spectrum in stereo pre-auralization view
+            schroeder_L_.setVisible(false);
+            ir_spectrum_L_.setVisible(false);
+            schroeder_R_.setVisible(false);
+            ir_spectrum_R_.setVisible(false);
+        }
+    } else {
+        // ════════════════════════════════════════════════════════════════
+        // MONO LAYOUT: original 2×2 grid with EDC + spectrum
+        // ════════════════════════════════════════════════════════════════
+        schroeder_L_.setVisible(true);
+        ir_spectrum_L_.setVisible(true);
+
+        if (has_dry_) {
+            int irH = int(remaining * 0.55);
+            int compH = remaining - irH - 4;
+
+            auto irArea = area.removeFromTop(irH);
+            area.removeFromTop(4);
+            auto compArea = area;
+
+            // IR section: 2×2 grid
+            int irRowH = (irH - 4) / 2;
+            int irColW = (irArea.getWidth() - 4) / 2;
+            ir_waveform_L_.setBounds(irArea.getX(), irArea.getY(), irColW, irRowH);
+            schroeder_L_.setBounds(irArea.getX() + irColW + 4, irArea.getY(),
+                                   irColW, irRowH);
+            ir_spectrogram_L_.setBounds(irArea.getX(), irArea.getY() + irRowH + 4,
+                                        irColW, irRowH);
+            ir_spectrum_L_.setBounds(irArea.getX() + irColW + 4,
+                                     irArea.getY() + irRowH + 4, irColW, irRowH);
+
+            // Comparison: dry (left) vs convolved (right)
+            int compColW = (compArea.getWidth() - 4) / 2;
+            int compRowH = (compH - 4) / 2;
+            dry_waveform_.setBounds(compArea.getX(), compArea.getY(),
+                                    compColW, compRowH);
+            dry_spectrogram_.setBounds(compArea.getX(),
+                                       compArea.getY() + compRowH + 4,
+                                       compColW, compRowH);
+            conv_waveform_L_.setBounds(compArea.getX() + compColW + 4,
+                                       compArea.getY(), compColW, compRowH);
+            conv_spectrogram_L_.setBounds(compArea.getX() + compColW + 4,
+                                          compArea.getY() + compRowH + 4,
+                                          compColW, compRowH);
+        } else {
+            // No dry audio: IR fills space as 2×2
+            int irRowH = (remaining - 4) / 2;
+            int irColW = (area.getWidth() - 4) / 2;
+            ir_waveform_L_.setBounds(area.getX(), area.getY(), irColW, irRowH);
+            schroeder_L_.setBounds(area.getX() + irColW + 4, area.getY(),
+                                   irColW, irRowH);
+            ir_spectrogram_L_.setBounds(area.getX(), area.getY() + irRowH + 4,
+                                        irColW, irRowH);
+            ir_spectrum_L_.setBounds(area.getX() + irColW + 4,
+                                     area.getY() + irRowH + 4, irColW, irRowH);
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// ResultsWindow
+////////////////////////////////////////////////////////////////////////////////
+
+ResultsWindow::ResultsWindow(const std::vector<std::string>& paths,
+                             double sampleRate)
+        : DocumentWindow("Results",
+                          wv_theme::bg_dark,
+                          DocumentWindow::allButtons) {
+    content_.setSize(1100, 800);
+    setContentNonOwned(&content_, true);
+    centreWithSize(1100, 800);
+    setResizable(true, true);
+    setResizeLimits(800, 600, 10000, 10000);
+    setUsingNativeTitleBar(true);
+    setVisible(true);
+    toFront(true);
+
+    // Wayverb icon
+    {
+        auto icon = ImageCache::getFromMemory(
+                BinaryData::wayverb_png, BinaryData::wayverb_pngSize);
+        if (icon.isValid())
+            if (auto* peer = getPeer()) peer->setIcon(icon);
+    }
+
+#ifdef _WIN32
+    // Purple title bar (Windows 11 DWM)
+    if (auto* peer = getPeer()) {
+        HWND hwnd = static_cast<HWND>(peer->getNativeHandle());
+        COLORREF purple = RGB(92, 0, 163);
+        constexpr DWORD DWMWA_CAPTION_COLOR_VAL = 35;
+        DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR_VAL, &purple, sizeof(purple));
+    }
+#endif
+
+    content_.loadFiles(paths, sampleRate);
+}
+
+void ResultsWindow::closeButtonPressed() {
+    setVisible(false);
+}

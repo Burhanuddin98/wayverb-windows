@@ -29,8 +29,6 @@ namespace scene {
 /// This is the actual opengl view. Use it inside a generic_renderer.
 class view final : public mglu::drawable, public mglu::updatable {
 public:
-    //  Setup/teardown.
-
     view();
     ~view() noexcept;
 

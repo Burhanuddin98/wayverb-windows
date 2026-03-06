@@ -11,6 +11,7 @@ enum {
     idCancelRender,
     idVisualise,
     idResetView,
+    idRunSelfTest,
 };
 
 }  // namespace CommandIDs

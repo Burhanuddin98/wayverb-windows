@@ -122,7 +122,7 @@ public:
             : impl_{*this} {
         context_.setOpenGLVersionRequired(OpenGLContext::openGL3_2);
         context_.setRenderer(&impl_);
-        context_.setComponentPaintingEnabled(false);
+        context_.setComponentPaintingEnabled(true);
         context_.setContinuousRepainting(true);
         context_.setMultisamplingEnabled(true);
         context_.attachTo(*this);

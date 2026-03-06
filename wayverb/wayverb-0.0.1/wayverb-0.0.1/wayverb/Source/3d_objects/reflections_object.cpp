@@ -99,20 +99,19 @@ util::aligned::vector<float> reflections_object::extract_pressures(
                 reflections) {
     util::aligned::vector<float> ret;
 
-    //  source
-    ret.emplace_back(1);
+    //  source — bounce 0
+    ret.emplace_back(0);
 
-    //  reflections
+    //  reflections — encode normalised bounce depth [0,1]
     for (const auto& ray : reflections) {
-        for (const auto& r : ray) {
-            //  TODO find a better way of displaying energy
-            ret.emplace_back(1);
+        const float max_bounces = std::max(1.0f, float(ray.size()));
+        for (size_t j = 0; j < ray.size(); ++j) {
+            ret.emplace_back(float(j + 1) / max_bounces);
         }
     }
 
-    //  the last reflections.size() points will be moved to represent the
-    //  wavefront
-    ret.resize(ret.size() + reflections.size(), 1);
+    //  wavefront points — use 1.0 (last colour in rainbow)
+    ret.resize(ret.size() + reflections.size(), 1.0f);
 
     return ret;
 }
@@ -225,8 +224,29 @@ const char* reflections_shader::frag = R"(
 in float f_pressure;
 out vec4 frag_color;
 
+// HSV to RGB conversion for rainbow colouring by bounce depth
+vec3 hsv2rgb(float h, float s, float v) {
+    float c = v * s;
+    float x = c * (1.0 - abs(mod(h * 6.0, 2.0) - 1.0));
+    float m = v - c;
+    vec3 rgb;
+    if      (h < 1.0/6.0) rgb = vec3(c, x, 0);
+    else if (h < 2.0/6.0) rgb = vec3(x, c, 0);
+    else if (h < 3.0/6.0) rgb = vec3(0, c, x);
+    else if (h < 4.0/6.0) rgb = vec3(0, x, c);
+    else if (h < 5.0/6.0) rgb = vec3(x, 0, c);
+    else                   rgb = vec3(c, 0, x);
+    return rgb + m;
+}
+
 void main() {
-    frag_color = vec4(vec3(f_pressure), 1.0);
+    // f_pressure = 0 at source, 1 at deepest bounce
+    // Map to rainbow: red (bounce 1) -> violet (deep bounces)
+    float hue = clamp(f_pressure * 0.8, 0.0, 0.8);
+    vec3 col = hsv2rgb(hue, 1.0, 1.0);
+    // Fade alpha slightly for deeper bounces
+    float alpha = mix(1.0, 0.5, f_pressure);
+    frag_color = vec4(col, alpha);
 }
 )";
 
@@ -280,8 +300,13 @@ void reflections_object::do_draw(const glm::mat4& model_matrix) const {
         auto s_shader = shader->get_scoped();
         shader->set_model_matrix(model_matrix);
 
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
         auto s_vao = vao_.get_scoped();
         glDrawElements(GL_LINES, ibo_.size(), GL_UNSIGNED_INT, nullptr);
+
+        glDisable(GL_BLEND);
     }
 }
 

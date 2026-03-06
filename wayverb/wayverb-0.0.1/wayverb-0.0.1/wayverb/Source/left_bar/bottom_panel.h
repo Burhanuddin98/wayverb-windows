@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../UtilityComponents/connector.h"
+#include <chrono>
 
 namespace left_bar {
 
@@ -24,6 +25,11 @@ private:
 
     state state_ = state::idle;
     double progress_ = 0;
+
+    // ETA tracking
+    using clock_t = std::chrono::steady_clock;
+    clock_t::time_point stage_start_time_;
+    std::string current_stage_label_;
 
     juce::ProgressBar bar_;
     TextButton render_button_;

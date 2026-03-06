@@ -48,10 +48,15 @@ std::string compute_output_path(const source& source,
                                 const receiver& receiver,
                                 const capsule& capsule,
                                 const output& output) {
-    //  TODO platform-dependent, Windows path behaviour is different.
-    return util::build_string(
+    // Use platform-appropriate path separator.
+#ifdef _WIN32
+    constexpr char sep = '\\';
+#else
+    constexpr char sep = '/';
+#endif
+    auto path = util::build_string(
             output.get_output_directory(),
-            '/',
+            sep,
             (output.get_unique_id().empty() ? ""
                                             : (output.get_unique_id() + '.')),
             "s_",
@@ -62,6 +67,21 @@ std::string compute_output_path(const source& source,
             capsule.get_name().c_str(),
             '.',
             audio_file::get_extension(output.get_format()));
+
+    // Sanitize: remove characters illegal in Windows filenames from the
+    // filename portion (keep path separators in the directory part).
+    auto last_sep = path.find_last_of("/\\");
+    if (last_sep != std::string::npos) {
+        for (size_t i = last_sep + 1; i < path.size(); ++i) {
+            char c = path[i];
+            if (c == '<' || c == '>' || c == ':' || c == '"' ||
+                c == '|' || c == '?' || c == '*') {
+                path[i] = '_';
+            }
+        }
+    }
+
+    return path;
 }
 
 std::vector<std::string> compute_all_file_names(const persistent& persistent,

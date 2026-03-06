@@ -11,6 +11,8 @@
 
 #include "audio_file/audio_file.h"
 
+#include <cstdio>
+
 namespace wayverb {
 namespace combined {
 
@@ -37,10 +39,14 @@ auto crossover_filter(LoIt b_lo,
                       HiIt e_hi,
                       double cutoff,
                       double width) {
-    frequency_domain::filter filt{
-            frequency_domain::best_fft_length(std::max(
-                    std::distance(b_lo, e_lo), std::distance(b_hi, e_hi)))
-            << 2};
+    const auto lo_len = std::distance(b_lo, e_lo);
+    const auto hi_len = std::distance(b_hi, e_hi);
+    auto fft_bins = frequency_domain::best_fft_length(std::max(lo_len, hi_len))
+            << 2;
+    fprintf(stderr, "[crossover_filter] lo_len=%td hi_len=%td fft_bins=%zu cutoff=%.4f width=%.4f\n",
+            lo_len, hi_len, fft_bins, cutoff, width);
+    fflush(stderr);
+    frequency_domain::filter filt{fft_bins};
 
     constexpr auto l = 0;
 
@@ -77,19 +83,29 @@ auto postprocess(const combined_results<Histogram>& input,
                  double room_volume,
                  const core::environment& environment,
                  double output_sample_rate) {
+    fprintf(stderr, "[combined::postprocess] start: waveguide bands=%zu room_vol=%.1f sr=%.0f\n",
+            input.waveguide.size(), room_volume, output_sample_rate);
+    fflush(stderr);
+
     //  Individual processing.
+    fprintf(stderr, "[combined::postprocess] waveguide postprocess...\n"); fflush(stderr);
     const auto waveguide_processed =
             waveguide::postprocess(input.waveguide,
                                    method,
                                    environment.acoustic_impedance,
                                    output_sample_rate);
+    fprintf(stderr, "[combined::postprocess] waveguide done, len=%zu\n",
+            waveguide_processed.size()); fflush(stderr);
 
+    fprintf(stderr, "[combined::postprocess] raytracer postprocess...\n"); fflush(stderr);
     const auto raytracer_processed = raytracer::postprocess(input.raytracer,
                                                             method,
                                                             receiver_position,
                                                             room_volume,
                                                             environment,
                                                             output_sample_rate);
+    fprintf(stderr, "[combined::postprocess] raytracer done, len=%zu\n",
+            raytracer_processed.size()); fflush(stderr);
 
     const auto make_iterator = [](auto it) {
         return util::make_mapping_iterator_adapter(std::move(it),

@@ -7,9 +7,14 @@
 #include "modern_gl_utils/drawable.h"
 #include "modern_gl_utils/updatable.h"
 
+#include "core/cl/triangle.h"
+#include "core/conversions.h"
+
 #include "glm/glm.hpp"
 
 #include "../JuceLibraryCode/JuceHeader.h"
+
+#include <functional>
 
 namespace scene {
 
@@ -101,7 +106,26 @@ private:
         return return_type{};
     }
 
+    /// Möller-Trumbore ray-triangle pick — returns surface index or nullopt.
+    std::optional<size_t> pick_surface(const glm::vec2& mouse_pos) const;
+
+    /// Show material assignment popup for clicked surface.
+    void show_material_popup(size_t clicked_surface);
+
+    /// Refresh cached geometry after surface reassignment.
+    void refresh_cached_geometry();
+
     main_model& model_;
+
+public:
+    /// Called after a surface reassignment so the host can rebuild the 3D scene.
+    std::function<void()> on_scene_changed;
+
+private:
+
+    // Cached scene geometry for surface picking
+    util::aligned::vector<wayverb::core::triangle> triangles_;
+    util::aligned::vector<glm::vec3> vertices_;
 
     std::unique_ptr<mouse_action> mouse_action_;
 

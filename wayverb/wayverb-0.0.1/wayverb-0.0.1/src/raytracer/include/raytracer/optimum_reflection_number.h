@@ -35,8 +35,13 @@ double min_absorption(It begin, It end) {
 }
 
 /// Get the number of necessary reflections for a given min absorption.
+/// Capped at 200 as a safety limit — beyond this, energy is negligible.
 inline size_t compute_optimum_reflection_number(double absorption) {
-    return std::ceil(-6 / std::log10(1 - absorption));
+    constexpr size_t MAX_REFLECTIONS = 200;
+    if (absorption <= 0.0) return MAX_REFLECTIONS;
+    if (absorption >= 1.0) return 1;
+    auto n = static_cast<size_t>(std::ceil(-6 / std::log10(1 - absorption)));
+    return std::min(n, MAX_REFLECTIONS);
 }
 
 template <typename It>

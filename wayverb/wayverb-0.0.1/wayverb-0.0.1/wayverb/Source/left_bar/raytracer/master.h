@@ -8,13 +8,21 @@
 namespace left_bar {
 namespace raytracer {
 
-class rays_required_property final
-        : public text_display_property<wayverb::combined::model::raytracer> {
+class ray_count_property final : public PropertyComponent,
+                                  public Label::Listener {
 public:
-    rays_required_property(model_t& model);
+    using model_t = wayverb::combined::model::raytracer;
+
+    ray_count_property(model_t& model);
 
 private:
-    std::string get_model(const model_t& model) const override;
+    void refresh() override {}
+    void labelTextChanged(Label* label) override;
+    void update_from_model();
+
+    model_t& model_;
+    Label label_;
+    typename model_t::scoped_connection connection_;
 };
 
 ////////////////////////////////////////////////////////////////////////////////

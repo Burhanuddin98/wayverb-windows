@@ -85,7 +85,7 @@ class waveguide final : public owning_member<waveguide,
                                              single_band_waveguide,
                                              multiple_band_waveguide> {
 public:
-    enum class mode { single, multiple };
+    enum class mode { single, multiple, raytracer_only };
 
     explicit waveguide(
             mode mode = mode::single,

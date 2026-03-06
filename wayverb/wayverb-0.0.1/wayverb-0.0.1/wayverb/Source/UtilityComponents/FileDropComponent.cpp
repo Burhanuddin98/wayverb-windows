@@ -18,8 +18,20 @@ void FileDropComponent::removeListener(Listener* l) { listener_list.remove(l); }
 
 void FileDropComponent::buttonClicked(juce::Button* b) {
     if (b == &load_button) {
-        juce::FileChooser fc(
-                "open...", juce::File::nonexistent, valid_file_formats);
+        // Default to demo/assets/test_models if it exists
+        auto exeDir = juce::File::getSpecialLocation(
+                juce::File::currentExecutableFile).getParentDirectory();
+        auto testModels = exeDir.getParentDirectory()
+                .getChildFile("demo").getChildFile("assets")
+                .getChildFile("test_models");
+        // Fallback: try from current working directory
+        if (!testModels.isDirectory()) {
+            testModels = juce::File::getCurrentWorkingDirectory()
+                    .getChildFile("demo").getChildFile("assets")
+                    .getChildFile("test_models");
+        }
+        if (!testModels.isDirectory()) testModels = juce::File::nonexistent;
+        juce::FileChooser fc("open...", testModels, valid_file_formats);
         if (fc.browseForFileToOpen()) {
             listener_list.call(&Listener::file_dropped, this, fc.getResult());
         }

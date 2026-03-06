@@ -38,14 +38,25 @@ void raytracer::set_room_volume(double volume) {
     notify();
 }
 
+void raytracer::set_ray_count_override(size_t rays) {
+    ray_count_override_ = rays;
+    notify();
+}
+
+size_t raytracer::get_ray_count_override() const { return ray_count_override_; }
+
 wayverb::raytracer::simulation_parameters raytracer::get() const {
-    return wayverb::raytracer::make_simulation_parameters(
+    auto params = wayverb::raytracer::make_simulation_parameters(
             quality_,
             receiver_radius_,
             speed_of_sound_,
             histogram_sample_rate_,
             room_volume_,
             img_src_order_);
+    if (ray_count_override_ > 0) {
+        params.rays = ray_count_override_;
+    }
+    return params;
 }
 
 bool operator==(const raytracer& a, const raytracer& b) {

@@ -1,5 +1,7 @@
 #include "controller.h"
 
+#include "utilities/map_to_vector.h"
+
 namespace scene {
 
 /// A mouse action is a series of movements while a mouse button is held.
@@ -31,7 +33,7 @@ public:
 
     void mouse_drag(const MouseEvent& e) override {
         const auto diff = e.getOffsetFromDragStart();
-        const auto angle_scale = 0.01;
+        const auto angle_scale = 0.005;
         model_.set_rotation(wayverb::core::az_el{
                 static_cast<float>(diff.x * angle_scale + initial_.azimuth),
                 static_cast<float>(diff.y * angle_scale + initial_.elevation)});
@@ -150,7 +152,15 @@ auto make_move_item_action_ptr(wayverb::combined::model::scene& model,
 ////////////////////////////////////////////////////////////////////////////////
 
 controller::controller(main_model& model)
-        : model_{model} {}
+        : model_{model} {
+    // Cache scene geometry for surface picking
+    const auto scene_data = model_.project.get_scene_data();
+    triangles_ = scene_data.get_triangles();
+    vertices_ = util::map_to_vector(
+            begin(scene_data.get_vertices()),
+            end(scene_data.get_vertices()),
+            wayverb::core::to_vec3{});
+}
 
 controller::~controller() noexcept = default;
 
@@ -219,38 +229,159 @@ void controller::mouse_wheel_move(const MouseEvent& e,
     //  Only zoom if another action is not ongoing.
     if (mouse_action_ == nullptr) {
         const auto current_distance = model_.scene.get_eye_distance();
-        const auto diff = current_distance * d.deltaY;
-        model_.scene.set_eye_distance(current_distance + diff);
+        //  Smooth exponential zoom — 20% per scroll notch
+        const auto factor = std::pow(0.8f, d.deltaY * 3.0f);
+        const auto new_distance = std::max(0.01f, current_distance * factor);
+        model_.scene.set_eye_distance(new_distance);
     }
 }
 
 std::unique_ptr<controller::mouse_action> controller::start_action(
         const MouseEvent& e) {
-    //  If middle and left mouse buttons are pressed, start panning action.
+    //  Middle-click: pan
     if (e.mods.isMiddleButtonDown()) {
         return std::make_unique<pan_action>(model_.scene);
     }
 
-    //  If middle mouse button is pressed, start rotation action.
+    //  Right-click: pan (more intuitive secondary control)
     if (e.mods.isRightButtonDown()) {
+        return std::make_unique<pan_action>(model_.scene);
+    }
+
+    //  Left-click: move hovered item, pick surface, or rotate
+    if (e.mods.isLeftButtonDown()) {
+        //  First: if a source/receiver is hovered, drag it
+        if (allow_edit_) {
+            auto action = do_action_with_closest_thing(
+                    wayverb::core::to_vec2{}(e.getPosition()),
+                    *model_.project.persistent.sources(),
+                    *model_.project.persistent.receivers(),
+                    [this](const auto& shared) -> std::unique_ptr<mouse_action> {
+                        return make_move_item_action_ptr(model_.scene, shared);
+                    });
+
+            if (action) return action;
+
+            //  Shift+left-click: surface picking for material assignment
+            if (e.mods.isShiftDown()) {
+                const auto mouse_pos = wayverb::core::to_vec2{}(e.getPosition());
+                if (const auto surf = pick_surface(mouse_pos)) {
+                    model_.scene.set_visible_surface(*surf);
+                    show_material_popup(*surf);
+                }
+                return nullptr;
+            }
+        }
+
+        //  Default left-drag on empty space: rotate the view
         return std::make_unique<rotate_action>(model_.scene);
     }
 
-    //  If left mouse button is pressed, check for hovered items.
-    //  If any, start move action with hovered item.
-    //  Else, do nothing.
-    if (allow_edit_ && e.mods.isLeftButtonDown()) {
-        return do_action_with_closest_thing(
-                wayverb::core::to_vec2{}(e.getPosition()),
-                *model_.project.persistent.sources(),
-                *model_.project.persistent.receivers(),
-                [this](const auto& shared) -> std::unique_ptr<mouse_action> {
-                    return make_move_item_action_ptr(model_.scene, shared);
-                });
+    return nullptr;
+}
+
+std::optional<size_t> controller::pick_surface(
+        const glm::vec2& mouse_pos) const {
+    if (triangles_.empty() || vertices_.empty()) {
+        return std::nullopt;
     }
 
-    //  If nothing (important) is pressed then do nothing.
-    return nullptr;
+    const auto origin = model_.scene.compute_world_camera_position();
+    const auto direction = model_.scene.compute_world_mouse_direction(mouse_pos);
+
+    float best_t = std::numeric_limits<float>::max();
+    std::optional<size_t> best_surface;
+
+    for (const auto& tri : triangles_) {
+        const auto& v0 = vertices_[tri.v0];
+        const auto& v1 = vertices_[tri.v1];
+        const auto& v2 = vertices_[tri.v2];
+
+        // Möller-Trumbore ray-triangle intersection
+        const auto e1 = v1 - v0;
+        const auto e2 = v2 - v0;
+        const auto pvec = glm::cross(direction, e2);
+        const auto det = glm::dot(e1, pvec);
+
+        if (std::abs(det) < 1e-8f) continue;
+
+        const auto inv_det = 1.0f / det;
+        const auto tvec = origin - v0;
+        const auto u = glm::dot(tvec, pvec) * inv_det;
+        if (u < 0.0f || u > 1.0f) continue;
+
+        const auto qvec = glm::cross(tvec, e1);
+        const auto v = glm::dot(direction, qvec) * inv_det;
+        if (v < 0.0f || u + v > 1.0f) continue;
+
+        const auto t = glm::dot(e2, qvec) * inv_det;
+        if (t > 0.0f && t < best_t) {
+            best_t = t;
+            best_surface = tri.surface;
+        }
+    }
+
+    return best_surface;
+}
+
+void controller::show_material_popup(size_t clicked_surface) {
+    PopupMenu menu;
+    const auto& materials = *model_.project.persistent.materials();
+
+    // Header showing which region was clicked
+    if (clicked_surface < materials.size()) {
+        menu.addSectionHeader("Region: " +
+                              materials[clicked_surface]->get_name());
+        menu.addSeparator();
+    }
+
+    // Sub-header
+    menu.addSectionHeader("Assign Material:");
+
+    // Menu items: 1-based IDs (0 = dismissed)
+    for (size_t i = 0; i < materials.size(); ++i) {
+        const bool is_current = (i == clicked_surface);
+        menu.addItem(static_cast<int>(i + 1),
+                     materials[i]->get_name(),
+                     !is_current,  // disabled if already assigned
+                     is_current);  // ticked if current
+    }
+
+    menu.addSeparator();
+    const int new_material_id = static_cast<int>(materials.size() + 1);
+    menu.addItem(new_material_id, "New Material...");
+
+    const int result = menu.show();
+    if (result == 0) {
+        // Dismissed — clear highlight
+        model_.scene.set_visible_surface(std::nullopt);
+        return;
+    }
+
+    size_t target_surface;
+    if (result == new_material_id) {
+        auto name = "Material " + std::to_string(materials.size() + 1);
+        target_surface = model_.project.add_surface(name);
+    } else {
+        target_surface = static_cast<size_t>(result - 1);
+    }
+
+    model_.project.reassign_surface(clicked_surface, target_surface);
+    model_.scene.set_visible_surface(target_surface);
+    refresh_cached_geometry();
+
+    if (on_scene_changed) {
+        on_scene_changed();
+    }
+}
+
+void controller::refresh_cached_geometry() {
+    const auto scene_data = model_.project.get_scene_data();
+    triangles_ = scene_data.get_triangles();
+    vertices_ = util::map_to_vector(
+            begin(scene_data.get_vertices()),
+            end(scene_data.get_vertices()),
+            wayverb::core::to_vec3{});
 }
 
 }  // namespace scene

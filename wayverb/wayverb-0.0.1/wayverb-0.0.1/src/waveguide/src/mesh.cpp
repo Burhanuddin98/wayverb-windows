@@ -12,6 +12,7 @@
 
 #include "utilities/popcount.h"
 
+#include <cstdio>
 #include <iostream>
 
 namespace wayverb {
@@ -73,25 +74,40 @@ mesh compute_mesh(
     auto nodes = [&] {
         const auto num_nodes = compute_num_nodes(desc);
 
+        fprintf(stderr, "[mesh] num_nodes=%zu\n", num_nodes);
+        fflush(stderr);
+
         cl::Buffer node_buffer{cc.context,
                                CL_MEM_READ_WRITE,
                                num_nodes * sizeof(condensed_node)};
 
-        const auto enqueue = [&] {
-            return cl::EnqueueArgs(queue, cl::NDRange(num_nodes));
-        };
+        //  Batch size to keep each GPU dispatch under ~1 second (TDR safe).
+        //  set_node_inside fires 32 rays per node, so 128K nodes per batch
+        //  is conservative for an RTX 2060.
+        constexpr size_t BATCH_SIZE = 128 * 1024;
 
         //  find whether each node is inside or outside the model
+        //  Batched dispatch to avoid GPU TDR timeout on Windows.
         {
             auto kernel = program.get_node_inside_kernel();
-            kernel(enqueue(),
-                   node_buffer,
-                   desc,
-                   buffers.get_voxel_index_buffer(),
-                   buffers.get_global_aabb(),
-                   buffers.get_side(),
-                   buffers.get_triangles_buffer(),
-                   buffers.get_vertices_buffer());
+            for (size_t offset = 0; offset < num_nodes; offset += BATCH_SIZE) {
+                const auto count = std::min(BATCH_SIZE, num_nodes - offset);
+                kernel(cl::EnqueueArgs(queue,
+                                       cl::NDRange(offset),   // global_offset
+                                       cl::NDRange(count),    // global_size
+                                       cl::NullRange),        // local_size (auto)
+                       node_buffer,
+                       desc,
+                       buffers.get_voxel_index_buffer(),
+                       buffers.get_global_aabb(),
+                       buffers.get_side(),
+                       buffers.get_triangles_buffer(),
+                       buffers.get_vertices_buffer());
+                queue.finish();  // yield to OS between batches
+                fprintf(stderr, "[mesh] set_node_inside: %zu / %zu\n",
+                        std::min(offset + count, num_nodes), num_nodes);
+                fflush(stderr);
+            }
         }
 
 #ifndef NDEBUG
@@ -108,11 +124,21 @@ mesh compute_mesh(
         }
 #endif
 
-        //  find node boundary type
+        //  find node boundary type (lighter kernel, but batch anyway)
         {
             auto kernel = program.get_node_boundary_kernel();
-            kernel(enqueue(), node_buffer, desc);
+            for (size_t offset = 0; offset < num_nodes; offset += BATCH_SIZE) {
+                const auto count = std::min(BATCH_SIZE, num_nodes - offset);
+                kernel(cl::EnqueueArgs(queue,
+                                       cl::NDRange(offset),
+                                       cl::NDRange(count),
+                                       cl::NullRange),
+                       node_buffer, desc);
+                queue.finish();
+            }
         }
+
+        fprintf(stderr, "[mesh] mesh setup complete\n"); fflush(stderr);
 
         return core::read_from_buffer<condensed_node>(queue, node_buffer);
     }();
@@ -128,12 +154,28 @@ mesh compute_mesh(
             util::map_to_vector(
                     begin(voxelised.get_scene_data().get_surfaces()),
                     end(voxelised.get_scene_data().get_surfaces()),
-                    [&](const auto& surface) {
-                        return to_impedance_coefficients(
-                                compute_reflectance_filter_coefficients(
-                                        surface.absorption.s,
-                                        1 / config::time_step(speed_of_sound,
-                                                              mesh_spacing)));
+                    [&](const auto& surface) -> coefficients_canonical {
+                        try {
+                            return to_impedance_coefficients(
+                                    compute_reflectance_filter_coefficients(
+                                            surface.absorption.s,
+                                            1 / config::time_step(speed_of_sound,
+                                                                  mesh_spacing)));
+                        } catch (const std::exception& e) {
+                            //  Filter design failed (extreme spectral shape).
+                            //  Fall back to flat coefficient using mean absorption.
+                            fprintf(stderr,
+                                    "[mesh] WARNING: filter design failed (%s), "
+                                    "using mean absorption fallback\n",
+                                    e.what());
+                            fflush(stderr);
+                            double mean_abs = 0;
+                            for (int i = 0; i < core::simulation_bands; ++i) {
+                                mean_abs += surface.absorption.s[i];
+                            }
+                            mean_abs /= core::simulation_bands;
+                            return to_flat_coefficients(mean_abs);
+                        }
                     }),
             std::move(boundary_data)};
 

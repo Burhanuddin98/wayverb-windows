@@ -9,6 +9,8 @@
 #include "utilities/mapping_iterator_adapter.h"
 #include "utilities/range.h"
 
+#include <cstdio>
+
 namespace frequency_domain {
 
 template <size_t N>
@@ -54,7 +56,15 @@ auto multiband_filter(It b,
 
     //  A bit of extra padding here so that discontinuities at the end get
     //  truncated away.
-    const auto bins = best_fft_length(std::distance(b, e)) << 2;
+    //  Cap FFT size to 4M bins (~16MB per buffer) to prevent OOM.
+    constexpr size_t MAX_FFT_BINS = 1 << 22;  // 4194304
+    auto bins = best_fft_length(std::distance(b, e)) << 2;
+    if (bins > MAX_FFT_BINS) {
+        fprintf(stderr, "[multiband_filter] WARNING: capping FFT bins %zu -> %zu\n",
+                bins, MAX_FFT_BINS);
+        fflush(stderr);
+        bins = MAX_FFT_BINS;
+    }
     filter filt{bins};
 
     //  Will store the area under each frequency-domain window.

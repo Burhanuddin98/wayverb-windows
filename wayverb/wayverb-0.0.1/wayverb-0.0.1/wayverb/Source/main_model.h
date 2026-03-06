@@ -9,11 +9,22 @@
 
 #include "core/scene_data_loader.h"
 
+#include <functional>
+#include <unordered_map>
+#include <vector>
+
 /// All the stuff that goes into a save-file/project.
 /// Projects consist of a (copy of a) 3d model, along with a json save file.
 class project final {
     const wayverb::core::scene_data_loader scene_data_;
     bool needs_save_;
+
+    /// Per-triangle surface assignment (triangle index → surface index).
+    /// Populated by auto_partition_surfaces() and manual reassignment.
+    std::unordered_map<size_t, cl_uint> triangle_overrides_;
+
+    /// Uniform scale applied to all vertex positions (e.g. 0.001 for mm→m).
+    float scale_factor_{1.0f};
 
 public:
     wayverb::combined::model::persistent persistent;
@@ -39,6 +50,33 @@ public:
 
     wayverb::core::generic_scene_data<cl_float3, std::string> get_scene_data()
             const;
+
+    /// Auto-partition mesh into surface regions by face-normal clustering.
+    /// Creates material entries and fills triangle_overrides_.
+    void auto_partition_surfaces();
+
+    /// Reassign all triangles currently in region `from_surface` to
+    /// `to_surface`.
+    void reassign_surface(size_t from_surface, size_t to_surface);
+
+    /// Add a new named surface/material. Returns the new surface index.
+    size_t add_surface(const std::string& name);
+
+    /// Remove a surface. Triangles assigned to it merge into surface 0.
+    void remove_surface(size_t index);
+
+    /// Number of surfaces in the scene (after overrides).
+    size_t get_surface_count() const;
+
+    /// Called when surfaces are added or reassigned.
+    std::function<void()> on_surfaces_changed;
+
+    /// Scale factor for imported geometry (1.0 = meters, 0.001 = mm→m, etc.)
+    float get_scale() const { return scale_factor_; }
+    void set_scale(float s);
+
+    /// Called when scale changes (UI should refresh view).
+    std::function<void()> on_scale_changed;
 };
 
 ////////////////////////////////////////////////////////////////////////////////

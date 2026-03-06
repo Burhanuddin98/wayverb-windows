@@ -1,9 +1,16 @@
 #include "combined/threaded_engine.h"
 #include "combined/forwarding_call.h"
+#include "combined/model/waveguide.h"
 #include "combined/validate_placements.h"
 #include "combined/waveguide_base.h"
 
 #include "core/cl/include.h"
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/stat.h>
+#endif
 
 #include "waveguide/config.h"
 
@@ -42,6 +49,38 @@ std::unique_ptr<capsule_base> polymorphic_capsule_model(
     }
 }
 
+/// Null waveguide for raytracer-only mode — returns empty output instantly.
+class null_waveguide final : public waveguide_base {
+public:
+    std::unique_ptr<waveguide_base> clone() const override {
+        return std::make_unique<null_waveguide>();
+    }
+
+    double compute_sampling_frequency() const override {
+        // Return a reasonable frequency so the waveguide mesh has sensible
+        // granularity.  At 1 kHz the grid spacing is ~0.2 m which is coarse
+        // enough to be lightweight but fine enough not to confuse placement
+        // checks.
+        return 1000.0;
+    }
+
+    std::optional<util::aligned::vector<waveguide::bandpass_band>>
+    run(const core::compute_context&,
+        const waveguide::voxels_and_mesh&,
+        const glm::vec3&,
+        const glm::vec3&,
+        const core::environment&,
+        double,
+        const std::atomic_bool&,
+        std::function<void(cl::CommandQueue&,
+                           const cl::Buffer&,
+                           size_t, size_t)>) override {
+        fprintf(stderr, "[engine] raytracer-only mode — skipping waveguide\n");
+        fflush(stderr);
+        return util::aligned::vector<waveguide::bandpass_band>{};
+    }
+};
+
 std::unique_ptr<waveguide_base> polymorphic_waveguide_model(
         const model::waveguide& i) {
     switch (i.get_mode()) {
@@ -49,12 +88,19 @@ std::unique_ptr<waveguide_base> polymorphic_waveguide_model(
             return make_waveguide_ptr(i.single_band().item()->get());
         case model::waveguide::mode::multiple:
             return make_waveguide_ptr(i.multiple_band().item()->get());
+        case model::waveguide::mode::raytracer_only:
+            return std::make_unique<null_waveguide>();
     }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
-complete_engine::~complete_engine() noexcept { cancel(); }
+complete_engine::~complete_engine() noexcept {
+    cancel();
+    if (future_.valid()) {
+        try { future_.get(); } catch (...) {}
+    }
+}
 
 bool complete_engine::is_running() const { return is_running_; }
 void complete_engine::cancel() { keep_going_ = false; }
@@ -65,13 +111,24 @@ void complete_engine::run(core::compute_context compute_context,
                           model::output output) {
     cancel();
 
+    // Move the old future into the new async task.  The wait happens on a
+    // worker thread, NOT the message thread, avoiding a deadlock when the
+    // old render's finished_() callback needs to post to the message thread.
+    auto old_future = std::move(future_);
+
     future_ = std::async(std::launch::async, [
         this,
+        old_future = std::move(old_future),
         compute_context = std::move(compute_context),
         scene_data = std::move(scene_data),
         persistent = std::move(persistent),
         output = std::move(output)
-    ] {
+    ]() mutable {
+        // Wait for the previous render to finish (worker thread — safe).
+        if (old_future.valid()) {
+            try { old_future.get(); } catch (...) {}
+        }
+
         do_run(std::move(compute_context),
                std::move(scene_data),
                std::move(persistent),
@@ -106,13 +163,20 @@ void complete_engine::do_run(core::compute_context compute_context,
                     [](const auto& i) { return i.item()->get_position(); });
         };
 
+        const auto is_raytracer_only =
+                persistent.waveguide()->get_mode() ==
+                model::waveguide::mode::raytracer_only;
+
         const auto grid_spacing = waveguide::config::grid_spacing(
                 environment.speed_of_sound,
                 1 / compute_sampling_frequency(*persistent.waveguide()));
-        fprintf(stderr, "[engine] do_run: waveguide grid_spacing=%.4f m\n",
-                grid_spacing); fflush(stderr);
+        fprintf(stderr, "[engine] do_run: waveguide grid_spacing=%.4f m  raytracer_only=%d\n",
+                grid_spacing, int(is_raytracer_only)); fflush(stderr);
 
-        if (!is_pairwise_distance_acceptable(
+        // Skip pairwise distance check in raytracer-only mode since
+        // there is no waveguide grid to worry about.
+        if (!is_raytracer_only &&
+            !is_pairwise_distance_acceptable(
                     make_position_extractor_iterator(
                             std::begin(*persistent.sources())),
                     make_position_extractor_iterator(
@@ -264,6 +328,10 @@ void complete_engine::do_run(core::compute_context compute_context,
                 throw std::runtime_error{"No channels were rendered."};
             }
 
+            fprintf(stderr, "[engine] normalizing %zu channels...\n",
+                    all_channels.size());
+            fflush(stderr);
+
             //  Normalize.
             const auto make_iterator = [](auto it) {
                 return util::make_mapping_iterator_adapter(std::move(it),
@@ -288,12 +356,45 @@ void complete_engine::do_run(core::compute_context compute_context,
 
             //  Write out files.
             for (const auto& i : all_channels) {
-                audio_file::write(i.file_name.c_str(),
-                                  i.data,
-                                  get_sample_rate(output.get_sample_rate()),
-                                  output.get_format(),
-                                  output.get_bit_depth());
+                fprintf(stderr, "[engine] writing: %s (%zu samples)\n",
+                        i.file_name.c_str(), i.data.size());
+                fflush(stderr);
+
+                // Ensure the output directory exists before writing.
+                {
+                    auto slash = i.file_name.find_last_of("/\\");
+                    if (slash != std::string::npos) {
+                        auto dir = i.file_name.substr(0, slash);
+                        if (!dir.empty()) {
+#ifdef _WIN32
+                            // CreateDirectoryA is fine — path already ASCII/locale.
+                            CreateDirectoryA(dir.c_str(), nullptr);
+#else
+                            ::mkdir(dir.c_str(), 0755);
+#endif
+                        }
+                    }
+                }
+
+                try {
+                    audio_file::write(i.file_name.c_str(),
+                                      i.data,
+                                      get_sample_rate(output.get_sample_rate()),
+                                      output.get_format(),
+                                      output.get_bit_depth());
+                    fprintf(stderr, "[engine] wrote OK: %s\n",
+                            i.file_name.c_str());
+                    fflush(stderr);
+                } catch (const std::exception& e) {
+                    fprintf(stderr, "[engine] WRITE FAILED: %s — %s\n",
+                            i.file_name.c_str(), e.what());
+                    fflush(stderr);
+                    throw;
+                }
             }
+
+            fprintf(stderr, "[engine] all files written successfully\n");
+            fflush(stderr);
         }
 
     } catch (const cl::Error& e) {
@@ -306,6 +407,10 @@ void complete_engine::do_run(core::compute_context compute_context,
         fprintf(stderr, "[engine] std::exception: %s\n", e.what());
         fflush(stderr);
         encountered_error_(e.what());
+    } catch (...) {
+        fprintf(stderr, "[engine] UNKNOWN exception caught!\n");
+        fflush(stderr);
+        encountered_error_("Unknown fatal error during simulation.");
     }
 
     is_running_ = false;
