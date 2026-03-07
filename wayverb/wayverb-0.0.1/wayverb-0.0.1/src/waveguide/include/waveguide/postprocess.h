@@ -106,10 +106,9 @@ auto postprocess(const util::aligned::vector<bandpass_band>& results,
     }
 
     {
-        //  DC blocking, just in case...
-        //  Won't catch exponential drift, but should get really low
-        //  oscillations.
-        constexpr auto dc_block_hz = 10.0;
+        //  DC blocking — remove subsonic energy that causes bass crescendo
+        //  artifacts when combined with the crossover filter.
+        constexpr auto dc_block_hz = 30.0;
         const auto dc_block = dc_block_hz / output_sample_rate;
         frequency_domain::filter filt{
                 frequency_domain::best_fft_length(ret.size()) << 2};
@@ -118,7 +117,7 @@ auto postprocess(const util::aligned::vector<bandpass_band>& results,
         filt.run(b, e, b, [&](auto cplx, auto freq) {
             return cplx * static_cast<float>(
                                   frequency_domain::compute_hipass_magnitude(
-                                          freq, dc_block, 0.9, 0));
+                                          freq, dc_block, 0.3, 0));
         });
     }
 

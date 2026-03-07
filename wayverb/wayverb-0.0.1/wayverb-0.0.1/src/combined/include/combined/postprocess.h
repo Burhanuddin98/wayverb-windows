@@ -11,6 +11,8 @@
 
 #include "audio_file/audio_file.h"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 namespace wayverb {
@@ -116,14 +118,32 @@ auto postprocess(const combined_results<Histogram>& input,
         return raytracer_processed;
     }
 
+    //  DC-block the raytracer output to match waveguide treatment and
+    //  prevent subsonic energy leaking through the crossover.
+    auto raytracer_blocked = raytracer_processed;
+    {
+        constexpr auto dc_block_hz = 30.0;
+        const auto dc_block = dc_block_hz / output_sample_rate;
+        frequency_domain::filter dc_filt{
+                frequency_domain::best_fft_length(raytracer_blocked.size()) << 2};
+        dc_filt.run(begin(raytracer_blocked),
+                    end(raytracer_blocked),
+                    begin(raytracer_blocked),
+                    [&](auto cplx, auto freq) {
+            return cplx * static_cast<float>(
+                frequency_domain::compute_hipass_magnitude(
+                    freq, dc_block, 0.3, 0));
+        });
+    }
+
     const auto cutoff = *std::max_element(make_iterator(begin(input.waveguide)),
                                           make_iterator(end(input.waveguide))) /
                         output_sample_rate;
     const auto width = 0.2;  //  Wider = more natural-sounding
     auto filtered = crossover_filter(begin(waveguide_processed),
                                      end(waveguide_processed),
-                                     begin(raytracer_processed),
-                                     end(raytracer_processed),
+                                     begin(raytracer_blocked),
+                                     end(raytracer_blocked),
                                      cutoff,
                                      width);
 
@@ -134,19 +154,31 @@ auto postprocess(const combined_results<Histogram>& input,
                              distance(source_position, receiver_position) *
                              output_sample_rate / environment.speed_of_sound)));
 
-    if (window_length == 0) {
-        return filtered;
+    if (window_length != 0) {
+        const auto window = core::left_hanning(std::floor(window_length));
+        std::transform(
+                begin(window),
+                end(window),
+                begin(filtered),
+                begin(filtered),
+                [](auto envelope, auto signal) { return envelope * signal; });
     }
 
-    const auto window = core::left_hanning(std::floor(window_length));
-
-    //  Multiply together the window and filtered signal.
-    std::transform(
-            begin(window),
-            end(window),
-            begin(filtered),
-            begin(filtered),
-            [](auto envelope, auto signal) { return envelope * signal; });
+    //  Fade out the last 5% of the IR to kill any bass crescendo from
+    //  FFT circular convolution or crossover phase artifacts.
+    {
+        const auto fade_len = std::max(
+                size_t{256},
+                static_cast<size_t>(filtered.size() * 0.05));
+        const auto fade_start = filtered.size() > fade_len
+                ? filtered.size() - fade_len : 0;
+        for (size_t i = fade_start; i < filtered.size(); ++i) {
+            const auto t = static_cast<float>(i - fade_start) /
+                           static_cast<float>(fade_len);
+            //  Raised cosine fade: 0.5*(1+cos(pi*t))
+            filtered[i] *= 0.5f * (1.0f + std::cos(3.14159265f * t));
+        }
+    }
 
     return filtered;
 }
