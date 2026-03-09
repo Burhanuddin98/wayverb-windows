@@ -27,13 +27,30 @@ constexpr int top    = 20;
 constexpr int right  = 10;
 }  // namespace axis
 
-// ── Acoustic metrics ────────────────────────────────────────────────────────
+// ── Acoustic metrics (ISO 3382) ─────────────────────────────────────────────
+//  Octave band centre frequencies: 125, 250, 500, 1k, 2k, 4k Hz
+constexpr int kNumBands = 6;
+constexpr double kBandCentres[kNumBands] = {125, 250, 500, 1000, 2000, 4000};
+
 struct AcousticMetrics {
+    // Broadband
     double rt60 = 0;   // Reverberation time (T20 × 3)
+    double t30  = 0;   // T30 (-5 to -35 dB, × 2)
     double edt  = 0;   // Early Decay Time
     double c80  = 0;   // Clarity (80 ms)
     double c50  = 0;   // Clarity (50 ms)
     double d50  = 0;   // Definition (%, 50 ms)
+    double ts   = 0;   // Centre Time (ms)
+    double br   = 0;   // Bass Ratio: avg(RT125,RT250) / avg(RT500,RT1k)
+
+    // Per-octave band (125, 250, 500, 1k, 2k, 4k)
+    double band_rt60[kNumBands] = {};
+    double band_t30[kNumBands]  = {};
+    double band_edt[kNumBands]  = {};
+    double band_c80[kNumBands]  = {};
+    double band_c50[kNumBands]  = {};
+    double band_d50[kNumBands]  = {};
+    double band_ts[kNumBands]   = {};
 };
 
 // ── BufferAudioSource ───────────────────────────────────────────────────────
@@ -143,20 +160,43 @@ private:
 };
 
 // ── Spectrogram (STFT, inferno, dynamic freq cap) ──────────────────────────
-class SpectrogramDisplay : public Component {
+class SpectrogramDisplay : public Component,
+                           public Button::Listener {
 public:
+    SpectrogramDisplay();
     void setData(const std::vector<float>& data, double sampleRate);
     void paint(Graphics& g) override;
+    void resized() override;
     void mouseWheelMove(const MouseEvent& e, const MouseWheelDetails& w) override;
     void mouseDown(const MouseEvent& e) override;
     void mouseDrag(const MouseEvent& e) override;
     void mouseDoubleClick(const MouseEvent& e) override;
+    void buttonClicked(Button* b) override;
+    void setLogFreq(bool log);
+    bool isLogFreq() const { return log_freq_; }
     PlotZoom zoom_;
 private:
+    void rebuildImage();
+    TextButton log_lin_btn_{"Log"};
     Image image_;
     double duration_ = 0.0;
+    double min_freq_ = 20.0;
     double max_freq_ = 22050.0;
+    float db_floor_ = -80.0f;
+    float db_max_ = 0.0f;
+    bool log_freq_ = true;
+    std::vector<float> raw_data_;
+    double raw_sr_ = 44100.0;
     Point<float> drag_start_;
+};
+
+// ── ISO 3382 metrics table ─────────────────────────────────────────────────
+class MetricsTableDisplay : public Component {
+public:
+    void setMetrics(const AcousticMetrics& m);
+    void paint(Graphics& g) override;
+private:
+    AcousticMetrics metrics_;
 };
 
 // ── Schroeder energy decay curve ────────────────────────────────────────────
@@ -231,6 +271,9 @@ private:
     std::vector<float> conv_samples_R_;
     AudioBuffer<float> dry_buffer_;
     AudioBuffer<float> conv_buffer_;
+
+    // ── ISO 3382 metrics table ──
+    MetricsTableDisplay metrics_table_;
 
     // ── IR analysis: Left channel ──
     WaveformDisplay ir_waveform_L_;

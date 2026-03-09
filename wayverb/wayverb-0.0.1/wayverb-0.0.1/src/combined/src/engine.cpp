@@ -7,6 +7,7 @@
 #include "raytracer/canonical.h"
 
 #include "core/cl/common.h"
+#include "core/cl/scene_structs.h"
 #include "core/environment.h"
 #include "core/reverb_time.h"
 #include "core/scene_data.h"
@@ -106,7 +107,34 @@ public:
             , receiver_{receiver}
             , environment_{environment}
             , raytracer_{raytracer}
-            , waveguide_{std::move(waveguide)} {}
+            , waveguide_{std::move(waveguide)} {
+        //  Compute Sabine RT60 from scene geometry for physics-based
+        //  waveguide duration.  This replaces the arbitrary 1.5x multiplier.
+        try {
+            const auto absorption =
+                    core::equivalent_absorption_area(scene_data);
+            core::bands_type air_coeff{};
+            const auto rt60 = core::sabine_reverb_time(
+                    room_volume_, absorption, air_coeff);
+            //  Take the maximum RT60 across all 8 frequency bands.
+            //  Low-frequency bands typically have the longest decay.
+            double max_rt = 0.0;
+            for (int i = 0; i < 8; ++i) {
+                max_rt = std::max(max_rt, static_cast<double>(rt60.s[i]));
+            }
+            sabine_rt60_max_ = max_rt;
+            fprintf(stderr,
+                    "[engine] Sabine RT60 max=%.2f s (across 8 bands)\n",
+                    sabine_rt60_max_);
+            fflush(stderr);
+        } catch (const std::exception& e) {
+            fprintf(stderr,
+                    "[engine] WARNING: Sabine RT60 failed: %s, using "
+                    "default %.1f s\n",
+                    e.what(), sabine_rt60_max_);
+            fflush(stderr);
+        }
+    }
 
     std::unique_ptr<intermediate> run(
             const std::atomic_bool& keep_going) const {
@@ -168,8 +196,19 @@ public:
         const auto max_stochastic_time =
                 max_time(raytracer_output->aural.stochastic);
 
-        fprintf(stderr, "[engine] run: max_stochastic_time=%.4f s\n",
-                max_stochastic_time); fflush(stderr);
+        //  Waveguide duration: use whichever is longer — the raytracer's
+        //  geometric simulation time or the Sabine RT60 estimate from
+        //  the actual room geometry and materials.  This ensures the
+        //  waveguide captures the full low-frequency decay, which can
+        //  exceed the geometric prediction due to modal behavior.
+        //  Cap at min(sabine_rt60 * 1.5, 15s) — allows longer tails for
+        //  reverberant rooms while preventing runaway on RTX 2060 6GB.
+        const auto waveguide_cap = std::min(sabine_rt60_max_ * 1.5, 15.0);
+        const auto waveguide_time = std::min(
+                std::max(max_stochastic_time, sabine_rt60_max_), waveguide_cap);
+
+        fprintf(stderr, "[engine] run: max_stochastic=%.4f s  sabine_rt60=%.4f s  waveguide_time=%.4f s\n",
+                max_stochastic_time, sabine_rt60_max_, waveguide_time); fflush(stderr);
 
         //  WAVEGUIDE  /////////////////////////////////////////////////////////
         engine_state_changed_(state::starting_waveguide, 1.0);
@@ -182,7 +221,7 @@ public:
                 source_,
                 receiver_,
                 environment_,
-                max_stochastic_time,
+                waveguide_time,
                 keep_going,
                 [&](auto& queue, const auto& buffer, auto step, auto steps) {
                     if (step % 100 == 0) {
@@ -253,6 +292,7 @@ private:
     core::compute_context compute_context_;
     waveguide::voxels_and_mesh voxels_and_mesh_;
     double room_volume_;
+    double sabine_rt60_max_ = 2.0;
     glm::vec3 source_;
     glm::vec3 receiver_;
     core::environment environment_;

@@ -196,14 +196,24 @@ util::aligned::vector<float> postprocessing(const energy_histogram& histogram,
                                             const dirac_sequence& sequence,
                                             double acoustic_impedance);
 
+//  New overload with room parameters for onset delay and air absorption.
+util::aligned::vector<float> postprocessing(const energy_histogram& histogram,
+                                            const dirac_sequence& sequence,
+                                            double acoustic_impedance,
+                                            double room_volume,
+                                            double speed_of_sound);
+
 template <size_t Az, size_t El, typename Method>
 util::aligned::vector<float> postprocessing(
         const directional_energy_histogram<Az, El>& histogram,
         const Method& method,
         const dirac_sequence& sequence,
-        double acoustic_impedance) {
+        double acoustic_impedance,
+        double room_volume = 50.0,
+        double speed_of_sound = 340.0) {
     const auto summed = compute_summed_histogram(histogram, method);
-    return postprocessing(summed, sequence, acoustic_impedance);
+    return postprocessing(summed, sequence, acoustic_impedance,
+                          room_volume, speed_of_sound);
 }
 
 }  // namespace stochastic

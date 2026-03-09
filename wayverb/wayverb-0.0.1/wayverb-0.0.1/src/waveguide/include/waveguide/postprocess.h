@@ -72,54 +72,68 @@ auto postprocess(const band& band,
                                            output_sample_rate);
 }
 
+/// Multiband waveguide postprocessing with unified FFT.
+///
+/// Each waveguide band has a different native sample rate and produces a
+/// different-length signal after resampling.  The old code created a
+/// separate FFT filter per band, each with a different FFT size.  This
+/// caused misaligned frequency grids: adjacent bands had different bin
+/// spacing, leading to phase inconsistencies at band edges when summed.
+///
+/// The fix: pre-process all bands, find the maximum signal length, and
+/// create a SINGLE filter instance with a unified FFT size.  All bands
+/// are bandpass-filtered on the same frequency grid, eliminating phase
+/// smear at band boundaries.
 template <typename Method>
 auto postprocess(const util::aligned::vector<bandpass_band>& results,
                  const Method& method,
                  double acoustic_impedance,
                  double output_sample_rate) {
     util::aligned::vector<float> ret;
+    if (results.empty()) return ret;
+
+    //  Phase 1: attenuate, mixdown, and resample every band.
+    struct band_data {
+        util::aligned::vector<float> samples;
+        decltype(results[0].valid_hz / output_sample_rate) cutoff;
+    };
+    std::vector<band_data> all_bands;
+    all_bands.reserve(results.size());
+    size_t max_len = 0;
 
     for (const auto& band : results) {
         auto processed = postprocess(
                 band.band, method, acoustic_impedance, output_sample_rate);
+        max_len = std::max(max_len, processed.size());
+        all_bands.push_back(
+                {std::move(processed), band.valid_hz / output_sample_rate});
+    }
 
-        const auto cutoff = band.valid_hz / output_sample_rate;
+    //  Phase 2: single FFT size for all bands — unified frequency grid.
+    const auto fft_len =
+            frequency_domain::best_fft_length(max_len) << 3;
+    frequency_domain::filter filt{fft_len};
 
-        //  Bandpass based on previous band cutoff.
-        frequency_domain::filter filt{
-                frequency_domain::best_fft_length(processed.size()) << 2};
+    //  l=1 gives steeper band edges (less inter-band phase interaction).
+    //  width=0.2 gives smoother blending between adjacent bands.
+    constexpr auto l = 1;
+    constexpr auto width = 0.2;
 
-        constexpr auto l = 0;
-        constexpr auto width = 0.1;
-
-        const auto b = begin(processed);
-        const auto e = end(processed);
+    for (auto& bd : all_bands) {
+        const auto b = begin(bd.samples);
+        const auto e = end(bd.samples);
         filt.run(b, e, b, [&](auto cplx, auto freq) {
             return cplx * static_cast<float>(
                                   frequency_domain::compute_bandpass_magnitude(
-                                          freq, cutoff, width, l));
+                                          freq, bd.cutoff, width, l));
         });
 
-        //  Add results to ret.
-        ret.resize(std::max(ret.size(), processed.size()), 0.0f);
+        ret.resize(std::max(ret.size(), bd.samples.size()), 0.0f);
         std::transform(b, e, begin(ret), begin(ret), std::plus<>{});
     }
 
-    {
-        //  DC blocking — remove subsonic energy that causes bass crescendo
-        //  artifacts when combined with the crossover filter.
-        constexpr auto dc_block_hz = 30.0;
-        const auto dc_block = dc_block_hz / output_sample_rate;
-        frequency_domain::filter filt{
-                frequency_domain::best_fft_length(ret.size()) << 2};
-        const auto b = begin(ret);
-        const auto e = end(ret);
-        filt.run(b, e, b, [&](auto cplx, auto freq) {
-            return cplx * static_cast<float>(
-                                  frequency_domain::compute_hipass_magnitude(
-                                          freq, dc_block, 0.3, 0));
-        });
-    }
+    //  DC blocking is now handled in combined::postprocess to avoid
+    //  redundant/inconsistent filtering stages.
 
     return ret;
 }

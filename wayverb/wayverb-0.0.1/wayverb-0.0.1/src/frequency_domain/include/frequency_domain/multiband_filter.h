@@ -56,8 +56,10 @@ auto multiband_filter(It b,
 
     //  A bit of extra padding here so that discontinuities at the end get
     //  truncated away.
-    //  Cap FFT size to 4M bins (~16MB per buffer) to prevent OOM.
-    constexpr size_t MAX_FFT_BINS = 1 << 22;  // 4194304
+    //  Cap FFT size to 64M bins (~512MB per buffer).  At 44.1kHz this allows
+    //  IRs up to ~24 minutes — far beyond any realistic room.  The old 16M
+    //  cap silently truncated IRs longer than ~6 minutes.
+    constexpr size_t MAX_FFT_BINS = 1 << 26;  // 67108864
     auto bins = best_fft_length(std::distance(b, e)) << 2;
     if (bins > MAX_FFT_BINS) {
         fprintf(stderr, "[multiband_filter] WARNING: capping FFT bins %zu -> %zu\n",

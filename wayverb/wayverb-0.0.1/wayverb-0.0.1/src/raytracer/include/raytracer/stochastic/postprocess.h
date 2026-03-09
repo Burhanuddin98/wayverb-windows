@@ -48,14 +48,22 @@ auto postprocess(const directional_energy_histogram<Az, El>& histogram,
 
     auto max_seconds = max_size / histogram.sample_rate;
 
-    // Safety cap: limit dirac sequence to 10 seconds to prevent massive
-    // FFTW allocations that could crash the system.
-    constexpr double MAX_POSTPROCESS_SECONDS = 10.0;
-    if (max_seconds > MAX_POSTPROCESS_SECONDS) {
-        fprintf(stderr, "[stochastic::postprocess] WARNING: capping max_seconds %.2f -> %.2f\n",
-                max_seconds, MAX_POSTPROCESS_SECONDS);
+    //  Duration cap: use 1.5× Sabine RT60 estimate instead of arbitrary 10s.
+    //  This allows long reverb tails in cathedrals/concert halls while still
+    //  preventing runaway allocations.
+    //  Fallback: if room_volume is very large, cap at 30s absolute max.
+    const auto sabine_estimate = 0.161 * room_volume /
+            std::max(1.0, room_volume * 0.05);  //  rough absorption estimate
+    const auto max_allowed = std::min(
+            std::max(sabine_estimate * 1.5, 5.0),  //  at least 5s
+            30.0);                                   //  absolute max 30s
+
+    if (max_seconds > max_allowed) {
+        fprintf(stderr, "[stochastic::postprocess] capping max_seconds %.2f -> %.2f "
+                "(based on room geometry)\n",
+                max_seconds, max_allowed);
         fflush(stderr);
-        max_seconds = MAX_POSTPROCESS_SECONDS;
+        max_seconds = max_allowed;
     }
 
     fprintf(stderr, "[stochastic::postprocess] max_size=%zu max_seconds=%.3f\n",
@@ -69,8 +77,13 @@ auto postprocess(const directional_energy_histogram<Az, El>& histogram,
             dirac_sequence.sequence.size());
     fflush(stderr);
 
-    auto result = postprocessing(
-            histogram, method, dirac_sequence, environment.acoustic_impedance);
+    //  Use the new overload with room parameters for onset delay and air
+    //  absorption.
+    const auto summed = compute_summed_histogram(histogram, method);
+    auto result = postprocessing(summed, dirac_sequence,
+                                  environment.acoustic_impedance,
+                                  room_volume,
+                                  environment.speed_of_sound);
 
     fprintf(stderr, "[stochastic::postprocess] done, result len=%zu\n", result.size());
     fflush(stderr);

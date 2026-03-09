@@ -104,7 +104,12 @@ struct dirac_sum_functor final {
 struct sinc_sum_functor final {
     template <typename T, typename Ret>
     void operator()(const T& item, double sample_rate, Ret& ret) const {
-        constexpr auto width = 400;  //  Impulse width in samples.
+        //  Width reduced from 400 → 64 samples.
+        //  400 samples at 44.1kHz = 9ms of temporal smearing, which blurs
+        //  the direct sound with the first wall reflection in small rooms.
+        //  64 samples = 1.5ms — preserves discrete spike character while
+        //  still suppressing Gibbs ringing via the Blackman window.
+        constexpr auto width = 64;
 
         const auto item_time = time(item);
         const auto centre_sample = item_time * sample_rate;
@@ -124,8 +129,12 @@ struct sinc_sum_functor final {
              ++it) {
             const auto this_sample = std::distance(ret.begin(), it);
             const auto relative_sample = this_sample - centre_sample;
+            //  Blackman window: -58 dB first sidelobe vs -31.5 dB for Hann.
+            //  Greatly reduces Gibbs ringing on early reflections.
+            const auto offset = (relative_sample / width) + 0.5;
             const auto envelope =
-                    0.5 * (1 + std::cos(2 * M_PI * relative_sample / width));
+                    0.42 - 0.5 * std::cos(2 * M_PI * offset)
+                         + 0.08 * std::cos(4 * M_PI * offset);
             const auto filt = core::sinc(relative_sample);
             *it += volume(item) * envelope * filt;
         }
@@ -138,8 +147,8 @@ struct sinc_sum_functor final {
 
 template <typename T>
 auto make_histogram_iterator(T t, double speed_of_sound) {
-    if (speed_of_sound < 300 || 400 <= speed_of_sound) {
-        throw std::runtime_error{"Speed_of_sound outside expected range."};
+    if (speed_of_sound < 200 || speed_of_sound > 500) {
+        throw std::runtime_error{"Speed_of_sound outside expected range [200, 500] m/s."};
     }
     return util::make_mapping_iterator_adapter(
             std::move(t), histogram_mapper{speed_of_sound});

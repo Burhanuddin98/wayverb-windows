@@ -11,15 +11,11 @@
 #include <numeric>
 #include <algorithm>
 
-namespace {
-
-using juce::Rectangle;  // disambiguate from wingdi.h Rectangle()
-
 // ═════════════════════════════════════════════════════════════════════════════
-// Inferno colormap
+// Inferno colormap (outside anonymous namespace — used by SpectrogramDisplay)
 // ═════════════════════════════════════════════════════════════════════════════
 
-Colour inferno(float t) {
+static Colour inferno(float t) {
     t = juce::jlimit(0.0f, 1.0f, t);
     struct Stop { float t; uint8 r, g, b; };
     static const Stop stops[] = {
@@ -38,6 +34,10 @@ Colour inferno(float t) {
                   uint8(a.g + f * (b.g - a.g)),
                   uint8(a.b + f * (b.b - a.b)));
 }
+
+namespace {
+
+using juce::Rectangle;  // disambiguate from wingdi.h Rectangle()
 
 // ═════════════════════════════════════════════════════════════════════════════
 // FFT (radix-2 Cooley-Tukey)
@@ -154,69 +154,167 @@ std::vector<float> fft_convolve(const std::vector<float>& signal,
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// Octave-band filtering (ISO 3382 IEC 61260 Class 1)
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Bandpass filter an IR into one octave band using FFT.
+std::vector<float> octave_bandpass(const std::vector<float>& ir, double sr,
+                                    double fc) {
+    // Octave band edges: fc/√2 to fc×√2
+    const double f_lo = fc / std::sqrt(2.0);
+    const double f_hi = fc * std::sqrt(2.0);
+
+    // FFT size: next power of 2 ≥ signal length
+    size_t N = 1;
+    while (N < ir.size()) N <<= 1;
+    N <<= 1;  // 2× zero-padding for linear convolution
+
+    std::vector<std::complex<float>> buf(N, {0.0f, 0.0f});
+    for (size_t i = 0; i < ir.size(); ++i)
+        buf[i] = {ir[i], 0.0f};
+
+    fft_inplace(buf);
+
+    // Apply bandpass with smooth Butterworth-like edges (4th order)
+    const double df = sr / double(N);
+    for (size_t k = 0; k <= N / 2; ++k) {
+        double f = k * df;
+        // 4th-order Butterworth magnitude: 1/sqrt(1 + (f/fc)^(2n))
+        double g_hi = 1.0 / std::sqrt(1.0 + std::pow(f_lo / std::max(f, 1.0), 8.0));
+        double g_lo = 1.0 / std::sqrt(1.0 + std::pow(f / f_hi, 8.0));
+        float gain = static_cast<float>(g_hi * g_lo);
+        buf[k] *= gain;
+        if (k > 0 && k < N / 2)
+            buf[N - k] *= gain;
+    }
+
+    // IFFT (conjugate trick)
+    for (auto& c : buf) c = std::conj(c);
+    fft_inplace(buf);
+    const float scale = 1.0f / float(N);
+    std::vector<float> out(ir.size());
+    for (size_t i = 0; i < ir.size(); ++i)
+        out[i] = buf[i].real() * scale;
+
+    return out;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // Acoustic metrics (ISO 3382)
 // ═════════════════════════════════════════════════════════════════════════════
 
-AcousticMetrics computeMetrics(const std::vector<float>& ir, double sr) {
-    AcousticMetrics m;
-    if (ir.empty()) return m;
-    std::vector<double> energy(ir.size());
+// Compute single-band metrics from an energy vector and its Schroeder EDC.
+struct BandMetrics {
+    double rt60 = 0, t30 = 0, edt = 0, c80 = 0, c50 = 0, d50 = 0, ts = 0;
+};
+
+BandMetrics computeBandMetrics(const std::vector<float>& sig, double sr) {
+    BandMetrics bm;
+    if (sig.empty()) return bm;
+
+    const size_t N = sig.size();
+    std::vector<double> energy(N);
     double total = 0;
-    for (size_t i = 0; i < ir.size(); ++i) {
-        energy[i] = double(ir[i]) * double(ir[i]);
+    for (size_t i = 0; i < N; ++i) {
+        energy[i] = double(sig[i]) * double(sig[i]);
         total += energy[i];
     }
-    if (total <= 0) return m;
+    if (total <= 0) return bm;
 
     // Schroeder backward integration
-    std::vector<double> edc(ir.size());
+    std::vector<double> edc(N);
     edc.back() = energy.back();
-    for (int i = int(ir.size()) - 2; i >= 0; --i)
+    for (int i = int(N) - 2; i >= 0; --i)
         edc[i] = edc[i + 1] + energy[i];
     double peak = edc[0];
 
     // RT60 (T20: -5 to -25 dB, ×3)
-    int idx_5 = -1, idx_25 = -1;
-    for (size_t i = 0; i < edc.size(); ++i) {
-        double db = 10.0 * std::log10(edc[i] / peak);
-        if (idx_5 < 0 && db <= -5.0) idx_5 = int(i);
-        if (idx_25 < 0 && db <= -25.0) { idx_25 = int(i); break; }
+    int idx_5 = -1, idx_25 = -1, idx_35 = -1, idx_10 = -1;
+    for (size_t i = 0; i < N; ++i) {
+        double db = 10.0 * std::log10(std::max(edc[i] / peak, 1e-15));
+        if (idx_5  < 0 && db <= -5.0)  idx_5  = int(i);
+        if (idx_10 < 0 && db <= -10.0) idx_10 = int(i);
+        if (idx_25 < 0 && db <= -25.0) idx_25 = int(i);
+        if (idx_35 < 0 && db <= -35.0) { idx_35 = int(i); break; }
     }
     if (idx_5 >= 0 && idx_25 > idx_5)
-        m.rt60 = double(idx_25 - idx_5) / sr * 3.0;
+        bm.rt60 = double(idx_25 - idx_5) / sr * 3.0;
 
-    // EDT (0 to -10 dB, extrapolated to -60)
-    int idx_10 = -1;
-    for (size_t i = 0; i < edc.size(); ++i) {
-        double db = 10.0 * std::log10(edc[i] / peak);
-        if (db <= -10.0) { idx_10 = int(i); break; }
-    }
-    if (idx_10 > 0) m.edt = double(idx_10) / sr * 6.0;
+    // T30 (-5 to -35 dB, ×2)
+    if (idx_5 >= 0 && idx_35 > idx_5)
+        bm.t30 = double(idx_35 - idx_5) / sr * 2.0;
 
-    // C80 (Clarity 80 ms)
+    // EDT (0 to -10 dB, ×6)
+    if (idx_10 > 0)
+        bm.edt = double(idx_10) / sr * 6.0;
+
+    // C80
     int n80 = int(0.080 * sr);
-    if (n80 > 0 && n80 < int(ir.size())) {
+    if (n80 > 0 && n80 < int(N)) {
         double early = 0, late = 0;
         for (int i = 0; i < n80; ++i) early += energy[i];
-        for (size_t i = n80; i < ir.size(); ++i) late += energy[i];
-        if (late > 0) m.c80 = 10.0 * std::log10(early / late);
+        for (size_t i = n80; i < N; ++i) late += energy[i];
+        if (late > 0) bm.c80 = 10.0 * std::log10(early / late);
     }
 
     // C50
     int n50 = int(0.050 * sr);
-    if (n50 > 0 && n50 < int(ir.size())) {
+    if (n50 > 0 && n50 < int(N)) {
         double early = 0, late = 0;
         for (int i = 0; i < n50; ++i) early += energy[i];
-        for (size_t i = n50; i < ir.size(); ++i) late += energy[i];
-        if (late > 0) m.c50 = 10.0 * std::log10(early / late);
+        for (size_t i = n50; i < N; ++i) late += energy[i];
+        if (late > 0) bm.c50 = 10.0 * std::log10(early / late);
     }
 
-    // D50 (Definition %)
-    if (n50 > 0 && n50 < int(ir.size())) {
+    // D50 (%)
+    if (n50 > 0 && n50 < int(N)) {
         double early = 0;
         for (int i = 0; i < n50; ++i) early += energy[i];
-        m.d50 = early / total * 100.0;
+        bm.d50 = early / total * 100.0;
     }
+
+    // Ts (Centre Time, ms) = ∫t·h²(t)dt / ∫h²(t)dt
+    {
+        double num = 0;
+        for (size_t i = 0; i < N; ++i)
+            num += (double(i) / sr) * energy[i];
+        bm.ts = (num / total) * 1000.0;  // convert to ms
+    }
+
+    return bm;
+}
+
+AcousticMetrics computeMetrics(const std::vector<float>& ir, double sr) {
+    AcousticMetrics m;
+    if (ir.empty()) return m;
+
+    // Broadband metrics
+    auto bb = computeBandMetrics(ir, sr);
+    m.rt60 = bb.rt60;
+    m.t30  = bb.t30;
+    m.edt  = bb.edt;
+    m.c80  = bb.c80;
+    m.c50  = bb.c50;
+    m.d50  = bb.d50;
+    m.ts   = bb.ts;
+
+    // Per-octave band metrics
+    for (int b = 0; b < kNumBands; ++b) {
+        auto filtered = octave_bandpass(ir, sr, kBandCentres[b]);
+        auto bm = computeBandMetrics(filtered, sr);
+        m.band_rt60[b] = bm.rt60;
+        m.band_t30[b]  = bm.t30;
+        m.band_edt[b]  = bm.edt;
+        m.band_c80[b]  = bm.c80;
+        m.band_c50[b]  = bm.c50;
+        m.band_d50[b]  = bm.d50;
+        m.band_ts[b]   = bm.ts;
+    }
+
+    // Bass Ratio: avg(RT125,RT250) / avg(RT500,RT1k)
+    double rt_lo = (m.band_rt60[0] + m.band_rt60[1]) * 0.5;
+    double rt_mid = (m.band_rt60[2] + m.band_rt60[3]) * 0.5;
+    m.br = (rt_mid > 0.01) ? rt_lo / rt_mid : 0;
 
     return m;
 }
@@ -227,17 +325,20 @@ AcousticMetrics computeMetrics(const std::vector<float>& ir, double sr) {
 
 struct SpectrogramResult {
     Image image;
+    double min_freq;
     double max_freq;
 };
 
 SpectrogramResult compute_spectrogram(const std::vector<float>& data, double sr,
-                                      float db_floor = -80.0f) {
+                                      float db_floor = -80.0f,
+                                      bool log_freq = true) {
     const int fft_size = 1024;
     const int half = fft_size / 2;
     double nyquist = sr * 0.5;
+    const double f_min = 20.0;  // lowest displayed frequency
 
     if ((int)data.size() < fft_size)
-        return {Image(Image::RGB, 1, 1, true), nyquist};
+        return {Image(Image::RGB, 1, 1, true), f_min, nyquist};
 
     // Adaptive hop to limit max frames for performance
     const int max_frames = 2000;
@@ -284,19 +385,49 @@ SpectrogramResult compute_spectrogram(const std::vector<float>& data, double sr,
     double eff_max = nyquist;
     for (double nf : nice) { if (nf >= raw_max) { eff_max = nf; break; } }
     eff_max = std::min(eff_max, nyquist);
-    int display_bins = std::max(1, int(eff_max / nyquist * half));
 
-    // Build image
-    Image img(Image::RGB, n_frames, display_bins, true);
-    for (int f = 0; f < n_frames; ++f) {
-        for (int b = 0; b < display_bins; ++b) {
-            float db = mag_db[f][b];
-            float t = (db - db_floor) / (global_max - db_floor);
-            t = juce::jlimit(0.0f, 1.0f, t);
-            img.setPixelAt(f, display_bins - 1 - b, inferno(t));
+    // Build frequency-mapped image (log or linear).
+    const int n_rows = 256;
+    Image img(Image::RGB, n_frames, n_rows, true);
+
+    if (log_freq) {
+        const float log_min = std::log10(float(f_min));
+        const float log_max = std::log10(float(eff_max));
+        for (int row = 0; row < n_rows; ++row) {
+            float frac = float(row) / float(n_rows - 1);
+            float freq = std::pow(10.0f, log_min + frac * (log_max - log_min));
+            float lin_bin = float(freq / nyquist * half);
+            int b0 = juce::jlimit(0, half - 1, int(lin_bin));
+            int b1 = juce::jlimit(0, half - 1, b0 + 1);
+            float t_interp = lin_bin - float(b0);
+            for (int f = 0; f < n_frames; ++f) {
+                float db = mag_db[f][b0] * (1.0f - t_interp)
+                         + mag_db[f][b1] * t_interp;
+                float t = (db - db_floor) / (global_max - db_floor);
+                t = juce::jlimit(0.0f, 1.0f, t);
+                img.setPixelAt(f, n_rows - 1 - row, inferno(t));
+            }
+        }
+    } else {
+        // Linear frequency mapping: row maps linearly from f_min to eff_max
+        int bin_min = juce::jlimit(0, half - 1, int(f_min / nyquist * half));
+        int bin_max = juce::jlimit(0, half - 1, int(eff_max / nyquist * half));
+        for (int row = 0; row < n_rows; ++row) {
+            float frac = float(row) / float(n_rows - 1);
+            float lin_bin = float(bin_min) + frac * float(bin_max - bin_min);
+            int b0 = juce::jlimit(0, half - 1, int(lin_bin));
+            int b1 = juce::jlimit(0, half - 1, b0 + 1);
+            float t_interp = lin_bin - float(b0);
+            for (int f = 0; f < n_frames; ++f) {
+                float db = mag_db[f][b0] * (1.0f - t_interp)
+                         + mag_db[f][b1] * t_interp;
+                float t = (db - db_floor) / (global_max - db_floor);
+                t = juce::jlimit(0.0f, 1.0f, t);
+                img.setPixelAt(f, n_rows - 1 - row, inferno(t));
+            }
         }
     }
-    return {img, eff_max};
+    return {img, f_min, eff_max};
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -340,18 +471,41 @@ void drawTimeAxis(Graphics& g, const Rectangle<int>& plot, double dur) {
     }
 }
 
-void drawFreqAxisLinear(Graphics& g, const Rectangle<int>& plot, double maxFreq) {
-    if (maxFreq <= 0) return;
+void drawFreqAxisLogY(Graphics& g, const Rectangle<int>& plot,
+                      double minFreq, double maxFreq) {
+    if (minFreq <= 0 || maxFreq <= minFreq) return;
+    float log_min = std::log10(float(minFreq));
+    float log_max = std::log10(float(maxFreq));
     g.setFont(9.0f);
-    std::vector<float> ticks;
-    if (maxFreq <= 5000) ticks = {500, 1000, 2000, 3000, 4000};
-    else if (maxFreq <= 10000) ticks = {1000, 2000, 5000, 8000};
-    else ticks = {1000, 2000, 5000, 10000, 15000, 20000};
+    struct FT { float f; const char* l; };
+    FT ticks[] = {{20,"20"},{50,"50"},{100,"100"},{200,"200"},{500,"500"},
+                  {1000,"1k"},{2000,"2k"},{5000,"5k"},{10000,"10k"},{20000,"20k"}};
+    for (auto& ft : ticks) {
+        if (ft.f <= minFreq || ft.f >= maxFreq) continue;
+        float frac = (std::log10(ft.f) - log_min) / (log_max - log_min);
+        int y = plot.getY() + int((1.0f - frac) * plot.getHeight());
+        g.setColour(wv_theme::grid.withAlpha(0.25f));
+        g.drawHorizontalLine(y, float(plot.getX()), float(plot.getRight()));
+        g.setColour(wv_theme::text_dim);
+        g.drawText(ft.l, plot.getX() - axis::left, y - 6, axis::left - 4, 12,
+                   Justification::centredRight);
+    }
+}
 
-    for (float f : ticks) {
-        if (f >= maxFreq) continue;
-        float yFrac = 1.0f - float(f / maxFreq);
-        int y = plot.getY() + int(yFrac * plot.getHeight());
+void drawFreqAxisLinY(Graphics& g, const Rectangle<int>& plot,
+                      double minFreq, double maxFreq) {
+    if (maxFreq <= minFreq) return;
+    g.setFont(9.0f);
+    // Choose nice tick spacing for linear axis
+    double range = maxFreq - minFreq;
+    double target = range / 8.0;
+    double nice[] = {50, 100, 200, 500, 1000, 2000, 5000, 10000};
+    double tick = 1000;
+    for (double n : nice) { if (n >= target) { tick = n; break; } }
+    double first = std::ceil(minFreq / tick) * tick;
+    for (double f = first; f < maxFreq; f += tick) {
+        float frac = float((f - minFreq) / (maxFreq - minFreq));
+        int y = plot.getY() + int((1.0f - frac) * plot.getHeight());
         g.setColour(wv_theme::grid.withAlpha(0.25f));
         g.drawHorizontalLine(y, float(plot.getX()), float(plot.getRight()));
         g.setColour(wv_theme::text_dim);
@@ -483,6 +637,14 @@ void handlePlotWheel(Component& c, PlotZoom& z, const MouseEvent& e,
                      const MouseWheelDetails& w) {
     auto plot = plotArea(c.getLocalBounds());
     if (!plot.contains(e.getPosition())) return;
+
+    // Horizontal scroll wheel → pan X
+    if (std::abs(w.deltaX) > 0.001f) {
+        z.panX(-double(w.deltaX) * 0.15 * (z.x1 - z.x0));
+        c.repaint();
+        return;
+    }
+
     double cx = double(e.x - plot.getX()) / plot.getWidth();
     double cy = double(e.y - plot.getY()) / plot.getHeight();
     // Map cursor to zoom space
@@ -517,6 +679,118 @@ void handlePlotDoubleClick(Component& c, PlotZoom& z) {
 }
 
 }  // namespace
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Metrics table display (ISO 3382)
+// ═════════════════════════════════════════════════════════════════════════════
+
+void MetricsTableDisplay::setMetrics(const AcousticMetrics& m) {
+    metrics_ = m;
+    repaint();
+}
+
+void MetricsTableDisplay::paint(Graphics& g) {
+    auto area = getLocalBounds();
+    g.fillAll(wv_theme::bg_panel);
+    g.setColour(wv_theme::grid);
+    g.drawRect(area);
+
+    const float pad = 4.0f;
+    const float rowH = 18.0f;
+    const int nCols = kNumBands + 2;  // label + 6 bands + broadband
+
+    // Column widths
+    const float labelW = 52.0f;
+    const float colW = float(area.getWidth() - labelW - pad * 2) / float(nCols - 1);
+
+    float x0 = float(area.getX()) + pad;
+    float y = float(area.getY()) + pad;
+
+    // Title
+    g.setFont(Font(13.0f).boldened());
+    g.setColour(wv_theme::cyan);
+    g.drawText("ISO 3382 Acoustic Parameters",
+               juce::Rectangle<float>(x0, y, float(area.getWidth()) - pad * 2, rowH),
+               Justification::centredLeft);
+    y += rowH + 2;
+
+    // Header row
+    g.setFont(Font(11.0f).boldened());
+    g.setColour(wv_theme::text);
+    g.drawText("Param", juce::Rectangle<float>(x0, y, labelW, rowH),
+               Justification::centredLeft);
+    for (int b = 0; b < kNumBands; ++b) {
+        String hdr;
+        if (kBandCentres[b] >= 1000)
+            hdr = String(int(kBandCentres[b] / 1000)) + "k";
+        else
+            hdr = String(int(kBandCentres[b]));
+        g.drawText(hdr, juce::Rectangle<float>(x0 + labelW + b * colW, y, colW, rowH),
+                   Justification::centred);
+    }
+    g.setColour(wv_theme::orange);
+    g.drawText("Broad", juce::Rectangle<float>(x0 + labelW + kNumBands * colW, y, colW, rowH),
+               Justification::centred);
+    y += rowH;
+
+    // Separator
+    g.setColour(wv_theme::grid);
+    g.drawLine(x0, y, x0 + float(area.getWidth()) - pad * 2, y, 1.0f);
+    y += 2;
+
+    // Data rows
+    struct Row {
+        const char* label;
+        const double* band;
+        double broad;
+        const char* unit;
+        int decimals;
+    };
+    const Row rows[] = {
+        {"RT60",  metrics_.band_rt60, metrics_.rt60, "s",  2},
+        {"T30",   metrics_.band_t30,  metrics_.t30,  "s",  2},
+        {"EDT",   metrics_.band_edt,  metrics_.edt,  "s",  2},
+        {"C80",   metrics_.band_c80,  metrics_.c80,  "dB", 1},
+        {"C50",   metrics_.band_c50,  metrics_.c50,  "dB", 1},
+        {"D50",   metrics_.band_d50,  metrics_.d50,  "%",  1},
+        {"Ts",    metrics_.band_ts,   metrics_.ts,   "ms", 0},
+    };
+
+    g.setFont(Font(11.0f));
+    for (const auto& row : rows) {
+        // Label
+        g.setColour(wv_theme::emphasis);
+        g.drawText(String(row.label),
+                   juce::Rectangle<float>(x0, y, labelW, rowH),
+                   Justification::centredLeft);
+
+        // Per-band values
+        g.setColour(wv_theme::text);
+        for (int b = 0; b < kNumBands; ++b) {
+            String val = String(row.band[b], row.decimals);
+            g.drawText(val,
+                       juce::Rectangle<float>(x0 + labelW + b * colW, y, colW, rowH),
+                       Justification::centred);
+        }
+
+        // Broadband
+        g.setColour(wv_theme::orange);
+        g.drawText(String(row.broad, row.decimals),
+                   juce::Rectangle<float>(x0 + labelW + kNumBands * colW, y, colW, rowH),
+                   Justification::centred);
+        y += rowH;
+    }
+
+    // Bass Ratio row
+    g.setColour(wv_theme::emphasis);
+    g.drawText("BR",
+               juce::Rectangle<float>(x0, y, labelW, rowH),
+               Justification::centredLeft);
+    g.setColour(wv_theme::orange);
+    g.drawText(String(metrics_.br, 2),
+               juce::Rectangle<float>(x0 + labelW + kNumBands * colW, y, colW, rowH),
+               Justification::centred);
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // WaveformDisplay
@@ -705,19 +979,64 @@ void SpectrumDisplay::mouseDoubleClick(const MouseEvent&) {
 // SpectrogramDisplay (dynamic freq cap)
 ////////////////////////////////////////////////////////////////////////////////
 
+SpectrogramDisplay::SpectrogramDisplay() {
+    log_lin_btn_.setButtonText("Log");
+    log_lin_btn_.setColour(TextButton::buttonColourId, wv_theme::bg_panel);
+    log_lin_btn_.setColour(TextButton::textColourOffId, wv_theme::cyan);
+    log_lin_btn_.addListener(this);
+    addAndMakeVisible(log_lin_btn_);
+}
+
+void SpectrogramDisplay::resized() {
+    // Place toggle button in top-right corner
+    log_lin_btn_.setBounds(getWidth() - 42, 2, 38, 16);
+}
+
+void SpectrogramDisplay::buttonClicked(Button* b) {
+    if (b == &log_lin_btn_) {
+        setLogFreq(!log_freq_);
+        log_lin_btn_.setButtonText(log_freq_ ? "Log" : "Lin");
+    }
+}
+
 void SpectrogramDisplay::setData(const std::vector<float>& data, double sr) {
+    raw_data_ = data;
+    raw_sr_ = sr;
     duration_ = data.empty() ? 0.0 : data.size() / sr;
-    auto result = compute_spectrogram(data, sr);
+    db_floor_ = -80.0f;
+    db_max_ = 0.0f;
+    rebuildImage();
+}
+
+void SpectrogramDisplay::rebuildImage() {
+    auto result = compute_spectrogram(raw_data_, raw_sr_, db_floor_, log_freq_);
     image_ = result.image;
+    min_freq_ = result.min_freq;
     max_freq_ = result.max_freq;
     repaint();
 }
 
+void SpectrogramDisplay::setLogFreq(bool log) {
+    if (log_freq_ == log) return;
+    log_freq_ = log;
+    log_lin_btn_.setButtonText(log_freq_ ? "Log" : "Lin");
+    if (!raw_data_.empty()) rebuildImage();
+}
+
 void SpectrogramDisplay::paint(Graphics& g) {
     g.fillAll(wv_theme::bg_plot);
-    auto plot = plotArea(getLocalBounds());
+    constexpr int cbar_w = 24;  // colorbar width
+    constexpr int cbar_gap = 4;
+    auto bounds = getLocalBounds();
+    // Reserve space for colorbar on the right
+    auto plot = juce::Rectangle<int>(
+            bounds.getX() + axis::left, bounds.getY() + axis::top,
+            bounds.getWidth() - axis::left - axis::right - cbar_w - cbar_gap,
+            bounds.getHeight() - axis::top - axis::bottom);
+
     g.setColour(wv_theme::text); g.setFont(11.0f);
-    g.drawText("Spectrogram", plot.getX(), getLocalBounds().getY() + 2,
+    String title = log_freq_ ? "Spectrogram (log)" : "Spectrogram (linear)";
+    g.drawText(title, plot.getX(), bounds.getY() + 2,
                plot.getWidth(), axis::top - 2, Justification::centredLeft);
     if (image_.isNull() || image_.getWidth() <= 1) {
         g.setColour(wv_theme::text_dim);
@@ -735,8 +1054,46 @@ void SpectrogramDisplay::paint(Graphics& g) {
     g.setColour(wv_theme::grid); g.drawRect(plot);
     double vis_dur = (zoom_.x1 - zoom_.x0) * duration_;
     drawTimeAxis(g, plot, vis_dur);
-    double vis_max_freq = max_freq_ * (zoom_.y1 - zoom_.y0);
-    drawFreqAxisLinear(g, plot, vis_max_freq);
+    // Frequency axis labels
+    if (log_freq_) {
+        float log_min = std::log10(float(min_freq_));
+        float log_max = std::log10(float(max_freq_));
+        double vis_f_min = std::pow(10.0, log_min + zoom_.y0 * (log_max - log_min));
+        double vis_f_max = std::pow(10.0, log_min + zoom_.y1 * (log_max - log_min));
+        drawFreqAxisLogY(g, plot, vis_f_min, vis_f_max);
+    } else {
+        double vis_f_min = min_freq_ + zoom_.y0 * (max_freq_ - min_freq_);
+        double vis_f_max = min_freq_ + zoom_.y1 * (max_freq_ - min_freq_);
+        drawFreqAxisLinY(g, plot, vis_f_min, vis_f_max);
+    }
+
+    // ── Colorbar ──
+    int cb_x = plot.getRight() + cbar_gap;
+    int cb_y = plot.getY();
+    int cb_h = plot.getHeight();
+    // Draw gradient
+    for (int row = 0; row < cb_h; ++row) {
+        float t = 1.0f - float(row) / float(cb_h);  // top=1 (hot), bottom=0 (cold)
+        g.setColour(inferno(t));
+        g.fillRect(cb_x, cb_y + row, cbar_w - 14, 1);
+    }
+    g.setColour(wv_theme::grid);
+    g.drawRect(cb_x, cb_y, cbar_w - 14, cb_h);
+    // Labels
+    g.setFont(8.0f);
+    g.setColour(wv_theme::text_dim);
+    g.drawText(String(int(db_max_)),
+               cb_x + cbar_w - 14, cb_y - 4, 14, 10,
+               Justification::centredLeft);
+    g.drawText(String(int(db_floor_)),
+               cb_x + cbar_w - 14, cb_y + cb_h - 6, 18, 10,
+               Justification::centredLeft);
+    float mid_db = (db_floor_ + db_max_) * 0.5f;
+    g.drawText(String(int(mid_db)),
+               cb_x + cbar_w - 14, cb_y + cb_h / 2 - 4, 18, 10,
+               Justification::centredLeft);
+    // "dB" label at top
+    g.drawText("dB", cb_x, cb_y - 14, cbar_w, 12, Justification::centred);
 }
 
 void SpectrogramDisplay::mouseWheelMove(const MouseEvent& e, const MouseWheelDetails& w) {
@@ -943,6 +1300,8 @@ ResultsContent::ResultsContent() {
     metrics_label_.setColour(Label::textColourId, wv_theme::cyan);
     addAndMakeVisible(metrics_label_);
 
+    addAndMakeVisible(metrics_table_);
+
     // Buttons
     styleBtn(auralize_btn_, wv_theme::emphasis, Colours::white);
     styleBtn(play_dry_btn_, wv_theme::bg_panel, wv_theme::green);
@@ -1008,13 +1367,15 @@ void ResultsContent::loadFiles(const std::vector<std::string>& paths,
     if (!ir_channels_.empty()) {
         auto& irL = ir_channels_[0].samples;
         metrics_ = computeMetrics(irL, sample_rate_);
+        metrics_table_.setMetrics(metrics_);
 
         String mstr;
         mstr << "RT60: " << String(metrics_.rt60, 2) << "s";
+        mstr << "   T30: " << String(metrics_.t30, 2) << "s";
         mstr << "   EDT: " << String(metrics_.edt, 2) << "s";
-        mstr << "   C80: " << String(metrics_.c80, 1) << " dB";
-        mstr << "   C50: " << String(metrics_.c50, 1) << " dB";
-        mstr << "   D50: " << String(metrics_.d50, 1) << "%";
+        mstr << "   Ts: " << String(metrics_.ts, 0) << "ms";
+        mstr << "   C80: " << String(metrics_.c80, 1) << "dB";
+        mstr << "   BR: " << String(metrics_.br, 2);
         if (is_stereo_) mstr << "   [Binaural L+R]";
         metrics_label_.setText(mstr, dontSendNotification);
 
@@ -1238,6 +1599,11 @@ void ResultsContent::resized() {
     stop_btn_.setBounds(ctrlRow.removeFromLeft(50));
     area.removeFromTop(4);
 
+    // ── Row 3: ISO 3382 metrics table ──
+    constexpr int metricsH = 180;
+    metrics_table_.setBounds(area.removeFromTop(metricsH));
+    area.removeFromTop(4);
+
     // ── Bottom: Transport bar ──
     auto transportArea = area.removeFromBottom(32);
     transport_bar_->setBounds(transportArea);
@@ -1393,9 +1759,9 @@ ResultsWindow::ResultsWindow(const std::vector<std::string>& paths,
         : DocumentWindow("Results",
                           wv_theme::bg_dark,
                           DocumentWindow::allButtons) {
-    content_.setSize(1100, 800);
+    content_.setSize(1100, 980);
     setContentNonOwned(&content_, true);
-    centreWithSize(1100, 800);
+    centreWithSize(1100, 980);
     setResizable(true, true);
     setResizeLimits(800, 600, 10000, 10000);
     setUsingNativeTitleBar(true);
