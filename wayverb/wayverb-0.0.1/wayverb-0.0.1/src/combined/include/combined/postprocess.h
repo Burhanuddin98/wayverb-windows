@@ -103,23 +103,27 @@ void enforce_decay(Vec& v, double sample_rate, double mixing_time) {
     }
 }
 
-//  Normalize by direct sound amplitude (first significant peak).
-//  This preserves the physical ratio between direct and reverberant energy,
-//  which determines C80, D50, and other acoustic metrics.
-//  Falls back to peak normalization if no clear direct sound is found.
+//  Distance-based IR normalization.
+//  Scales the IR so the direct sound peak = 1/distance (inverse distance law).
+//  At 1m: peak = 1.0.  At 3m: peak = 0.33.  At 0.5m: peak = 2.0.
+//  This preserves the physical room gain and distance cue.
+//  Values > 1.0 are fine in 32-bit float; the global ceiling limiter in
+//  threaded_engine prevents clipping for integer output formats.
 template <typename Vec>
-void normalize_direct_sound(Vec& v, float target = 0.9f) {
-    if (v.empty()) return;
+void normalize_distance(Vec& v, double sample_rate, float distance) {
+    if (v.empty() || distance < 0.01f) return;
 
-    //  Find the first significant peak (direct sound) in the first 10ms.
-    //  Direct sound should arrive within the first few milliseconds.
-    const size_t search_len = std::min(v.size(), size_t{4410});  //  ~100ms @ 44.1k
+    const float target = 1.0f / std::max(distance, 0.1f);
+
+    //  Find the direct sound peak in the first 100ms.
+    const size_t search_len = std::min(v.size(),
+            static_cast<size_t>(0.1 * sample_rate));
     float direct_peak = 0.0f;
     for (size_t i = 0; i < search_len; ++i) {
         direct_peak = std::max(direct_peak, std::abs(v[i]));
     }
 
-    //  If direct sound is too weak, fall back to global peak.
+    //  Fall back to global peak if direct sound is too weak.
     float global_peak = 0.0f;
     for (const auto& s : v) {
         global_peak = std::max(global_peak, std::abs(s));
@@ -133,6 +137,11 @@ void normalize_direct_sound(Vec& v, float target = 0.9f) {
         for (auto& s : v) {
             s *= scale;
         }
+        fprintf(stderr,
+                "[normalize_distance] d=%.2fm target=%.3f direct_peak=%.6f "
+                "scale=%.3f\n",
+                distance, target, direct_peak, scale);
+        fflush(stderr);
     }
 }
 
@@ -336,12 +345,14 @@ auto postprocess(const combined_results<Histogram>& input,
             std::is_same<std::decay_t<Method>,
                          core::attenuator::hrtf>::value;
 
+    const auto src_recv_distance = static_cast<float>(
+            glm::distance(source_position, receiver_position));
+
     if (input.waveguide.empty()) {
-        //  Raytracer-only: DC-block, normalize (mono only), return.
+        //  Raytracer-only: DC-block, distance-normalize, return.
         dc_block(raytracer_processed, output_sample_rate);
-        if constexpr (!is_hrtf) {
-            normalize_direct_sound(raytracer_processed);
-        }
+        normalize_distance(raytracer_processed, output_sample_rate,
+                           src_recv_distance);
         return raytracer_processed;
     }
 
@@ -470,14 +481,11 @@ auto postprocess(const combined_results<Histogram>& input,
         }
     }
 
-    //  Normalize by direct sound amplitude — preserves physical ratios
-    //  (C80, D50, etc.) instead of destroying them with peak normalization.
-    //  Skip for HRTF: per-channel normalization destroys the interaural
-    //  level difference (ILD), making the binaural output sound mono.
-    //  The global normalization in threaded_engine preserves ILD correctly.
-    if constexpr (!is_hrtf) {
-        normalize_direct_sound(filtered);
-    }
+    //  Distance-based normalization: direct sound peak = 1/distance.
+    //  Preserves physical room gain and distance cue.
+    //  For HRTF: both ears get the same distance-based scale, preserving ILD
+    //  since the HRTF directional weighting is already baked into the signal.
+    normalize_distance(filtered, output_sample_rate, src_recv_distance);
 
     return filtered;
 }

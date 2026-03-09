@@ -328,11 +328,15 @@ void complete_engine::do_run(core::compute_context compute_context,
                 throw std::runtime_error{"No channels were rendered."};
             }
 
-            fprintf(stderr, "[engine] normalizing %zu channels...\n",
+            fprintf(stderr, "[engine] applying ceiling limiter to %zu channels...\n",
                     all_channels.size());
             fflush(stderr);
 
-            //  Normalize.
+            //  Ceiling limiter at -1 dBTP (0.891).
+            //  Only scales DOWN if the peak exceeds the ceiling — never
+            //  amplifies.  This preserves the distance-based normalization
+            //  (direct sound = 1/d) while preventing clipping in integer
+            //  output formats.
             const auto make_iterator = [](auto it) {
                 return util::make_mapping_iterator_adapter(std::move(it),
                                                            max_mag_functor{});
@@ -346,11 +350,21 @@ void complete_engine::do_run(core::compute_context compute_context,
                 throw std::runtime_error{"All channels are silent."};
             }
 
-            const auto factor = 1.0 / max_mag;
+            constexpr float ceiling = 0.891f;  //  -1 dBTP
+            const auto factor = (max_mag > ceiling)
+                    ? static_cast<double>(ceiling) / max_mag
+                    : 1.0;
 
-            for (auto& channel : all_channels) {
-                for (auto& sample : channel.data) {
-                    sample *= factor;
+            fprintf(stderr, "[engine] peak=%.4f ceiling=%.3f factor=%.4f%s\n",
+                    max_mag, ceiling, factor,
+                    factor < 1.0 ? " (limiting)" : " (no change)");
+            fflush(stderr);
+
+            if (factor < 1.0) {
+                for (auto& channel : all_channels) {
+                    for (auto& sample : channel.data) {
+                        sample *= factor;
+                    }
                 }
             }
 

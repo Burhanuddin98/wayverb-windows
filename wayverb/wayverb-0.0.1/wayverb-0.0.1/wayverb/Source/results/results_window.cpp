@@ -678,6 +678,71 @@ void handlePlotDoubleClick(Component& c, PlotZoom& z) {
     c.repaint();
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// LUFS measurement (simplified ITU-R BS.1770-4)
+// K-weighting: high-shelf (+4 dB @ ~1.5 kHz) + high-pass (~38 Hz)
+// ═════════════════════════════════════════════════════════════════════════════
+
+struct Biquad {
+    double b0, b1, b2, a1, a2;
+    double z1 = 0, z2 = 0;
+    float process(float x) {
+        double y = b0 * x + z1;
+        z1 = b1 * x - a1 * y + z2;
+        z2 = b2 * x - a2 * y;
+        return static_cast<float>(y);
+    }
+    void reset() { z1 = z2 = 0; }
+};
+
+double measure_lufs(const std::vector<float>& samples, double sr) {
+    if (samples.empty() || sr <= 0) return -100.0;
+
+    // K-weighting stage 1: high-shelf (head model)
+    // Pre-computed for 48 kHz, adjusted via sample rate ratio
+    Biquad shelf;
+    {
+        // Analog prototype: +4 dB shelf above ~1500 Hz
+        const double fc = 1681.97;
+        const double G = std::pow(10.0, 4.0 / 20.0);  // +4 dB
+        const double K = std::tan(M_PI * fc / sr);
+        const double Vh = G;
+        const double Vb = std::sqrt(G);
+        const double denom = 1.0 + std::sqrt(2.0) * K + K * K;
+        shelf.b0 = (Vh + Vb * std::sqrt(2.0) * K + K * K) / denom;
+        shelf.b1 = 2.0 * (K * K - Vh) / denom;
+        shelf.b2 = (Vh - Vb * std::sqrt(2.0) * K + K * K) / denom;
+        shelf.a1 = 2.0 * (K * K - 1.0) / denom;
+        shelf.a2 = (1.0 - std::sqrt(2.0) * K + K * K) / denom;
+    }
+
+    // K-weighting stage 2: high-pass at ~38 Hz
+    Biquad hp;
+    {
+        const double fc = 38.0;
+        const double K = std::tan(M_PI * fc / sr);
+        const double denom = 1.0 + std::sqrt(2.0) * K + K * K;
+        hp.b0 = 1.0 / denom;
+        hp.b1 = -2.0 / denom;
+        hp.b2 = 1.0 / denom;
+        hp.a1 = 2.0 * (K * K - 1.0) / denom;
+        hp.a2 = (1.0 - std::sqrt(2.0) * K + K * K) / denom;
+    }
+
+    // Apply K-weighting and compute mean square
+    double sum_sq = 0.0;
+    for (size_t i = 0; i < samples.size(); ++i) {
+        float s = shelf.process(samples[i]);
+        s = hp.process(s);
+        sum_sq += static_cast<double>(s) * s;
+    }
+
+    double mean_sq = sum_sq / static_cast<double>(samples.size());
+    if (mean_sq < 1e-20) return -100.0;
+
+    return -0.691 + 10.0 * std::log10(mean_sq);
+}
+
 }  // namespace
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1313,14 +1378,24 @@ ResultsContent::ResultsContent() {
     play_conv_btn_.setEnabled(false);
     play_conv_btn_.setAlpha(0.4f);
 
+    styleBtn(loudness_mode_btn_, wv_theme::bg_panel, wv_theme::orange);
+    loudness_mode_btn_.setEnabled(false);
+    loudness_mode_btn_.setAlpha(0.4f);
+
+    lufs_label_.setFont(Font(11.0f));
+    lufs_label_.setColour(Label::textColourId, wv_theme::text_dim);
+    addAndMakeVisible(lufs_label_);
+
     auralize_btn_.addListener(this);
     play_dry_btn_.addListener(this);
     play_conv_btn_.addListener(this);
     stop_btn_.addListener(this);
+    loudness_mode_btn_.addListener(this);
     addAndMakeVisible(auralize_btn_);
     addAndMakeVisible(play_dry_btn_);
     addAndMakeVisible(play_conv_btn_);
     addAndMakeVisible(stop_btn_);
+    addAndMakeVisible(loudness_mode_btn_);
 
     // Playback engine
     source_player_.setSource(&transport_);
@@ -1521,6 +1596,46 @@ void ResultsContent::loadDryAndConvolve() {
 
     has_dry_ = true;
 
+    // ── LUFS measurement ──
+    dry_lufs_ = measure_lufs(dry_samples_, dry_rate_);
+
+    // For convolved, measure the loudest channel
+    double conv_lufs_L = measure_lufs(conv_samples_L_, dry_rate_);
+    double conv_lufs_R = conv_samples_R_.empty()
+            ? -100.0 : measure_lufs(conv_samples_R_, dry_rate_);
+    conv_lufs_ = std::max(conv_lufs_L, conv_lufs_R);
+
+    fprintf(stderr, "[results] LUFS: dry=%.1f conv=%.1f room_gain=%.1f dB\n",
+            dry_lufs_, conv_lufs_, conv_lufs_ - dry_lufs_);
+    fflush(stderr);
+
+    // Apply loudness matching if enabled
+    if (match_dry_loudness_ && dry_lufs_ > -90.0 && conv_lufs_ > -90.0) {
+        float gain = static_cast<float>(
+                std::pow(10.0, (dry_lufs_ - conv_lufs_) / 20.0));
+        for (auto& s : conv_samples_L_) s *= gain;
+        for (auto& s : conv_samples_R_) s *= gain;
+        // Update playback buffer too
+        for (int c = 0; c < conv_buffer_.getNumChannels(); ++c)
+            conv_buffer_.applyGain(c, 0, conv_buffer_.getNumSamples(), gain);
+        conv_lufs_ = dry_lufs_;  // they now match
+        fprintf(stderr, "[results] matched dry loudness: gain=%.3f (%.1f dB)\n",
+                gain, 20.0 * std::log10(gain));
+        fflush(stderr);
+    }
+
+    // Update LUFS display
+    String lufs_text;
+    lufs_text << "Dry: " << String(dry_lufs_, 1) << " LUFS";
+    if (conv_lufs_ > -90.0) {
+        lufs_text << "    Conv: " << String(conv_lufs_, 1) << " LUFS";
+        lufs_text << "    Room gain: " << String(conv_lufs_ - dry_lufs_, 1) << " dB";
+    }
+    lufs_label_.setText(lufs_text, dontSendNotification);
+
+    loudness_mode_btn_.setEnabled(true);
+    loudness_mode_btn_.setAlpha(1.0f);
+
     // Populate comparison displays (all at dry audio's native rate now)
     dry_waveform_.setData(dry_samples_, dry_rate_, "Dry Audio");
     dry_spectrogram_.setData(dry_samples_, dry_rate_);
@@ -1562,6 +1677,64 @@ void ResultsContent::buttonClicked(Button* b) {
         startPlayback(conv_buffer_, dry_rate_);
     } else if (b == &stop_btn_) {
         transport_.stop();
+    } else if (b == &loudness_mode_btn_) {
+        match_dry_loudness_ = !match_dry_loudness_;
+        loudness_mode_btn_.setButtonText(
+                match_dry_loudness_ ? "Match Dry Loudness" : "Physical Loudness");
+
+        // Apply or remove loudness matching without re-opening file chooser
+        if (has_dry_ && dry_lufs_ > -90.0 && conv_lufs_ > -90.0) {
+            // Re-convolve from stored IR data (no file chooser)
+            std::vector<std::vector<float>> conv_per_ch;
+            for (auto& ch : ir_channels_)
+                conv_per_ch.push_back(fft_convolve(dry_samples_, ch.samples));
+
+            conv_samples_L_ = conv_per_ch.empty()
+                    ? std::vector<float>() : conv_per_ch[0];
+            conv_samples_R_ = (conv_per_ch.size() >= 2)
+                    ? conv_per_ch[1] : std::vector<float>();
+
+            // Rebuild playback buffer
+            int n_ch = std::max(int(conv_per_ch.size()), 2);
+            int conv_len = conv_samples_L_.empty() ? 0 : int(conv_samples_L_.size());
+            conv_buffer_.setSize(n_ch, conv_len);
+            if (conv_per_ch.size() >= 2) {
+                for (int c = 0; c < int(conv_per_ch.size()); ++c)
+                    conv_buffer_.copyFrom(c, 0, conv_per_ch[c].data(), conv_len);
+            } else if (!conv_per_ch.empty()) {
+                conv_buffer_.copyFrom(0, 0, conv_per_ch[0].data(), conv_len);
+                conv_buffer_.copyFrom(1, 0, conv_per_ch[0].data(), conv_len);
+            }
+
+            // Measure fresh LUFS
+            conv_lufs_ = measure_lufs(conv_samples_L_, dry_rate_);
+
+            if (match_dry_loudness_) {
+                float gain = static_cast<float>(
+                        std::pow(10.0, (dry_lufs_ - conv_lufs_) / 20.0));
+                for (auto& s : conv_samples_L_) s *= gain;
+                for (auto& s : conv_samples_R_) s *= gain;
+                for (int c = 0; c < conv_buffer_.getNumChannels(); ++c)
+                    conv_buffer_.applyGain(c, 0, conv_buffer_.getNumSamples(), gain);
+                conv_lufs_ = dry_lufs_;
+            }
+
+            // Update displays
+            String lufs_text;
+            lufs_text << "Dry: " << String(dry_lufs_, 1) << " LUFS";
+            lufs_text << "    Conv: " << String(conv_lufs_, 1) << " LUFS";
+            lufs_text << "    Room gain: " << String(conv_lufs_ - dry_lufs_, 1) << " dB";
+            lufs_label_.setText(lufs_text, dontSendNotification);
+
+            conv_waveform_L_.setData(conv_samples_L_, dry_rate_,
+                    is_stereo_ ? "Convolved (Left Ear)" : "Convolved");
+            conv_spectrogram_L_.setData(conv_samples_L_, dry_rate_);
+            if (is_stereo_ && !conv_samples_R_.empty()) {
+                conv_waveform_R_.setData(conv_samples_R_, dry_rate_, "Convolved (Right Ear)");
+                conv_spectrogram_R_.setData(conv_samples_R_, dry_rate_);
+            }
+            repaint();
+        }
     }
 }
 
@@ -1597,7 +1770,14 @@ void ResultsContent::resized() {
     play_conv_btn_.setBounds(ctrlRow.removeFromLeft(110));
     ctrlRow.removeFromLeft(4);
     stop_btn_.setBounds(ctrlRow.removeFromLeft(50));
+    ctrlRow.removeFromLeft(8);
+    loudness_mode_btn_.setBounds(ctrlRow.removeFromLeft(140));
     area.removeFromTop(4);
+
+    // ── Row 2b: LUFS display ──
+    auto lufsRow = area.removeFromTop(16);
+    lufs_label_.setBounds(lufsRow);
+    area.removeFromTop(2);
 
     // ── Row 3: ISO 3382 metrics table ──
     constexpr int metricsH = 180;

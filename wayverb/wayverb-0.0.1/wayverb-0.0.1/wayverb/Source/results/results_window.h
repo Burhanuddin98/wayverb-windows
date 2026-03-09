@@ -299,11 +299,18 @@ private:
     Label title_label_;
     Label metrics_label_;
 
+    // ── Loudness ──
+    double dry_lufs_ = -100.0;
+    double conv_lufs_ = -100.0;
+    bool match_dry_loudness_ = false;
+    Label lufs_label_;
+
     // ── Buttons ──
     TextButton auralize_btn_{"Auralize..."};
     TextButton play_dry_btn_{"Play Dry"};
     TextButton play_conv_btn_{"Play Convolved"};
     TextButton stop_btn_{"Stop"};
+    TextButton loudness_mode_btn_{"Physical Loudness"};
 
     // ── Playback ──
     DefaultAudioDeviceManager device_manager_;
