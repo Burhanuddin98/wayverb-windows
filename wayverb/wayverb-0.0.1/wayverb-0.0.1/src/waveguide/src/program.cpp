@@ -393,11 +393,13 @@ BOUNDARY_TEMPLATE(3);
 float normal_waveguide_update(float prev_pressure,
                               float current_pressure,
                               const global float* current,
+                              const global condensed_node* nodes,
                               int3 dimensions,
                               int3 locator);
 float normal_waveguide_update(float prev_pressure,
                               float current_pressure,
                               const global float* current,
+                              const global condensed_node* nodes,
                               int3 dimensions,
                               int3 locator) {
     //  Face neighbors (6).
@@ -414,19 +416,23 @@ float normal_waveguide_update(float prev_pressure,
     //    face weight a = 1/3,  edge weight b = 1/6
     //  At lambda^2 = 1/3 (same Courant number as 7-point), the update is:
     //    p_next = (2/3)*p_n + face_sum/9 + edge_sum/18 - p_prev
-    //  This reduces numerical dispersion anisotropy by ~60% vs 7-point.
+    //  Only used when ALL 12 edge neighbors are interior mesh nodes
+    //  (id_inside or id_reentrant) to avoid boundary impedance mismatch.
     float edge_sum = 0;
     int edge_count = 0;
     for (int i = 0; i != EDGE_NEIGHBORS; ++i) {
         uint idx = edge_neighbor_index(locator, dimensions, i);
         if (idx != no_neighbor) {
-            edge_sum += current[idx];
-            edge_count++;
+            int bt = nodes[idx].boundary_type;
+            if (bt == id_inside || bt == id_reentrant) {
+                edge_sum += current[idx];
+                edge_count++;
+            }
         }
     }
 
     if (edge_count == EDGE_NEIGHBORS) {
-        //  Full 19-point IWB stencil.
+        //  Full 19-point IWB stencil (deep interior only).
         return (2.0f / 3.0f) * current_pressure
              + face_sum / 9.0f
              + edge_sum / 18.0f
@@ -470,7 +476,7 @@ float next_waveguide_pressure(
             if (node.boundary_type & id_inside ||
                 node.boundary_type & id_reentrant) {
                 return normal_waveguide_update(
-                        prev_pressure, current_pressure, current, dimensions, locator);
+                        prev_pressure, current_pressure, current, nodes, dimensions, locator);
             } else {
 #if ENABLE_BOUNDARIES
                 return boundary_1(current,
