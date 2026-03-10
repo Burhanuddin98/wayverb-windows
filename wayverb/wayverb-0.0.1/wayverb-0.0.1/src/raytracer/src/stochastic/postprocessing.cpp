@@ -218,27 +218,24 @@ util::aligned::vector<float> postprocessing(const energy_histogram& histogram,
     //  ── Output ───────────────────────────────────────────────────────
     util::aligned::vector<float> output(total_len, 0.0f);
 
-    //  ── Phase accumulator (COHERENT phase between frames) ───────────
-    //  Instead of random phase per frame, we maintain a running phase
-    //  per frequency bin and advance it by 2π·f·HOP/sr between frames.
-    //  This eliminates the vertical striping artifacts in the bass.
-    //  Phases are initialized randomly (once), then evolved deterministically.
+    //  ── Random phase generator ────────────────────────────────────────
+    //  Each STFT frame gets independent random phase per bin.  This is
+    //  physically correct for diffuse reverb (Schroeder's statistical
+    //  model) and eliminates the repeating flame/streak artifacts that
+    //  coherent phase accumulation produces.  The sqrt-Hann OLA window
+    //  ensures smooth time-domain transitions between frames despite
+    //  the per-frame phase randomization.
     std::default_random_engine rng{std::random_device{}()};
     std::uniform_real_distribution<float> phase_dist(
             -static_cast<float>(M_PI), static_cast<float>(M_PI));
 
-    std::vector<float> phase_accum(num_bins);
-    for (size_t k = 0; k < num_bins; ++k) {
-        phase_accum[k] = phase_dist(rng);
-    }
-
-    //  Phase advance per bin per hop: Δφ_k = 2π·k·HOP/fft_len
-    std::vector<float> phase_advance(num_bins);
-    for (size_t k = 0; k < num_bins; ++k) {
-        phase_advance[k] = 2.0f * static_cast<float>(M_PI) *
-                           static_cast<float>(k) * static_cast<float>(HOP) /
-                           static_cast<float>(fft_len);
-    }
+    //  ── Spectral jitter distribution ─────────────────────────────────
+    //  Real diffuse reverb follows Rayleigh amplitude statistics: the
+    //  magnitude in each frequency bin fluctuates with ~5.6 dB standard
+    //  deviation.  We add Gaussian jitter to the log-PSD (in dB) to
+    //  break up the smooth 8-band interpolation pattern.
+    //  ±4.5 dB std is conservative (real reverb is ~5.6 dB).
+    std::normal_distribution<float> jitter_dist(0.0f, 4.5f);
 
     //  ── Frame-by-frame synthesis ─────────────────────────────────────
     frequency_domain::filter filt{fft_len};
@@ -265,17 +262,7 @@ util::aligned::vector<float> postprocessing(const energy_histogram& histogram,
         }
 
         if (onset_gain < 1e-6f) {
-            //  Advance phases even when silent (maintain coherence).
-            for (size_t k = 0; k < num_bins; ++k) {
-                phase_accum[k] += phase_advance[k];
-                //  Wrap to [-π, π] periodically to prevent float drift.
-                if (phase_accum[k] > static_cast<float>(M_PI)) {
-                    phase_accum[k] -= 2.0f * static_cast<float>(M_PI);
-                } else if (phase_accum[k] < -static_cast<float>(M_PI)) {
-                    phase_accum[k] += 2.0f * static_cast<float>(M_PI);
-                }
-            }
-            continue;
+            continue;  //  Silent before mixing time — skip frame.
         }
 
         //  Interpolate histogram energy at this time.
@@ -314,10 +301,6 @@ util::aligned::vector<float> postprocessing(const energy_histogram& histogram,
                      //  Lower floor to 2 Hz (was 10 Hz — suppressed large
                      //  room modes).
                      if (f_hz < 2.0 || f >= 0.499) {
-                         //  Still advance phase.
-                         phase_accum[k] += phase_advance[k];
-                         if (phase_accum[k] > static_cast<float>(M_PI))
-                             phase_accum[k] -= 2.0f * static_cast<float>(M_PI);
                          return {0.0f, 0.0f};
                      }
 
@@ -359,21 +342,25 @@ util::aligned::vector<float> postprocessing(const energy_histogram& histogram,
                      ipsd *= sr;
 
                      if (ipsd <= 0.0) {
-                         phase_accum[k] += phase_advance[k];
-                         if (phase_accum[k] > static_cast<float>(M_PI))
-                             phase_accum[k] -= 2.0f * static_cast<float>(M_PI);
                          return {0.0f, 0.0f};
                      }
+
+                     //  Spectral jitter: perturb PSD by a random amount
+                     //  in dB to break up the repeating 8-band pattern.
+                     //  This models Rayleigh amplitude statistics of real
+                     //  diffuse sound fields.  Clamp to ±12 dB to prevent
+                     //  numerical overflow from Gaussian tail outliers.
+                     const float jitter_dB = std::clamp(
+                             jitter_dist(rng), -12.0f, 12.0f);
+                     ipsd *= std::pow(10.0, jitter_dB / 10.0);
 
                      const auto mag = onset_gain * static_cast<float>(
                              std::sqrt(static_cast<double>(fft_len) * ipsd *
                                        acoustic_impedance));
 
-                     //  Use accumulated phase (coherent between frames).
-                     const auto phase = phase_accum[k];
-                     phase_accum[k] += phase_advance[k];
-                     if (phase_accum[k] > static_cast<float>(M_PI))
-                         phase_accum[k] -= 2.0f * static_cast<float>(M_PI);
+                     //  Random phase per bin per frame (Schroeder diffuse
+                     //  field model).  Eliminates all repeating patterns.
+                     const auto phase = phase_dist(rng);
 
                      return std::polar(mag, phase);
                  });

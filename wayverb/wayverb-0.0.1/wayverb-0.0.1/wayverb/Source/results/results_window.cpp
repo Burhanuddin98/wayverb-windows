@@ -1917,26 +1917,24 @@ void ResultsContent::openPopout(Component* source) {
     win->setResizable(true, true);
     win->setResizeLimits(300, 150, 4000, 4000);
     win->setUsingNativeTitleBar(true);
+    win->setVisible(true);
 
-    // Wayverb icon
-    auto icon = ImageCache::getFromMemory(BinaryData::wayverb_png,
-                                          BinaryData::wayverb_pngSize);
-    win->setIcon(icon);
+    // Wayverb icon (must be after setVisible so the native peer exists)
+    if (auto* peer = win->getPeer()) {
+        auto icon = ImageCache::getFromMemory(BinaryData::wayverb_png,
+                                              BinaryData::wayverb_pngSize);
+        if (icon.isValid())
+            peer->setIcon(icon);
 
 #ifdef _WIN32
-    // Purple title bar via DWM
-    win->setVisible(true);
-    if (auto* peer = win->getPeer()) {
+        // Purple title bar via DWM
         HWND hwnd = (HWND)peer->getNativeHandle();
         constexpr DWORD DWMWA_CAPTION_COLOR_VAL = 35;
-        // BGR colour: 0x8a2be2 (blueviolet) → B=0x8a, G=0x2b, R=0xe2
         COLORREF purple = RGB(0x8a, 0x2b, 0xe2);
         DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR_VAL,
                               &purple, sizeof(purple));
-    }
-#else
-    win->setVisible(true);
 #endif
+    }
     win->toFront(true);
 
     popout_windows_.add(win);
