@@ -44,7 +44,8 @@ public:
             const core::voxelised_scene_data<
                     cl_float3,
                     core::surface<core::simulation_bands>>& voxelised,
-            size_t max_order);
+            size_t max_order,
+            size_t deterministic_order = 2);
 
     image_source_group_processor get_group_processor(
             size_t num_directions) const;
@@ -62,6 +63,7 @@ private:
     size_t num_directions_;
 
     size_t max_order_;
+    size_t deterministic_order_;
 
     raytracer::image_source::tree tree_;
 };
@@ -70,7 +72,7 @@ private:
 
 class make_image_source final {
 public:
-    make_image_source(size_t max_order);
+    make_image_source(size_t max_order, size_t deterministic_order = 2);
 
     image_source_processor get_processor(
             const core::compute_context& cc,
@@ -83,6 +85,7 @@ public:
 
 private:
     size_t max_order_;
+    size_t deterministic_order_;
 };
 
 }  // namespace reflection_processor

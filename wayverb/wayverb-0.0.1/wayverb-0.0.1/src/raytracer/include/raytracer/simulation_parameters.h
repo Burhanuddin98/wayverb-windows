@@ -31,10 +31,18 @@ struct simulation_parameters final {
     /// The frequency of the energy histogram.
     /// Smaller intervals need more rays, longer intervals are inaccurate.
     double histogram_sample_rate = 1000;
+
+    /// Maximum order for deterministic image-source enumeration.
+    /// Deterministic mode finds ALL valid image sources up to this order
+    /// by exhaustive enumeration (no ray-tracing randomness).
+    /// 0 = disabled, 1-3 recommended.  Order 3 is only feasible for
+    /// meshes with fewer than ~200 triangles.
+    size_t deterministic_image_source_order = 2;
 };
 
 constexpr auto to_tuple(const simulation_parameters& x) {
-    return std::tie(x.rays, x.maximum_image_source_order);
+    return std::tie(x.rays, x.maximum_image_source_order,
+                    x.deterministic_image_source_order);
 }
 
 constexpr bool operator==(const simulation_parameters& a,

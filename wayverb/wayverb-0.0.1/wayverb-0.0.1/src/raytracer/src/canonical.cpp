@@ -10,7 +10,8 @@ make_canonical_callbacks(const simulation_parameters& params,
                          size_t visual_items) {
     return std::make_tuple(
             raytracer::reflection_processor::make_image_source(
-                    params.maximum_image_source_order),
+                    params.maximum_image_source_order,
+                    params.deterministic_image_source_order),
             raytracer::reflection_processor::make_directional_histogram(
                     params.rays,
                     params.maximum_image_source_order + 1,
