@@ -6,6 +6,7 @@
 
 #include "waveguide/canonical.h"
 #include "waveguide/config.h"
+#include "waveguide/dispersion_compensation.h"
 #include "waveguide/postprocess.h"
 
 #include "core/sinc.h"
@@ -323,6 +324,16 @@ auto postprocess(const combined_results<Histogram>& input,
                                    output_sample_rate);
     fprintf(stderr, "[combined::postprocess] waveguide done, len=%zu\n",
             waveguide_processed.size()); fflush(stderr);
+
+    //  Dispersion compensation: warp the waveguide spectrum to correct
+    //  for the 7-point stencil's frequency-dependent phase velocity error.
+    //  This shifts modal peaks back to their true frequencies and reduces
+    //  high-frequency smearing in the spectrogram.
+    if (!input.waveguide.empty()) {
+        const auto wg_sr = input.waveguide.front().band.sample_rate;
+        waveguide::compensate_dispersion(
+                waveguide_processed, wg_sr, output_sample_rate);
+    }
 
     fprintf(stderr, "[combined::postprocess] raytracer postprocess...\n"); fflush(stderr);
     auto raytracer_processed = raytracer::postprocess(input.raytracer,

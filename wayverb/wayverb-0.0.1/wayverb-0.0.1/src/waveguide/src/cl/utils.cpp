@@ -73,32 +73,6 @@ float3 compute_node_position(const mesh_descriptor descriptor, int3 locator) {
     return descriptor.min_corner + convert_float3(locator) * descriptor.spacing;
 }
 
-#define EDGE_NEIGHBORS (12)
-
-uint edge_neighbor_index(int3 locator, int3 dim, int edge_id);
-uint edge_neighbor_index(int3 locator, int3 dim, int edge_id) {
-    int3 offset;
-    switch (edge_id) {
-        case 0:  offset = (int3)(+1, +1,  0); break;
-        case 1:  offset = (int3)(+1, -1,  0); break;
-        case 2:  offset = (int3)(-1, +1,  0); break;
-        case 3:  offset = (int3)(-1, -1,  0); break;
-        case 4:  offset = (int3)(+1,  0, +1); break;
-        case 5:  offset = (int3)(+1,  0, -1); break;
-        case 6:  offset = (int3)(-1,  0, +1); break;
-        case 7:  offset = (int3)(-1,  0, -1); break;
-        case 8:  offset = (int3)( 0, +1, +1); break;
-        case 9:  offset = (int3)( 0, +1, -1); break;
-        case 10: offset = (int3)( 0, -1, +1); break;
-        case 11: offset = (int3)( 0, -1, -1); break;
-        default: return no_neighbor;
-    }
-    int3 n = locator + offset;
-    if (locator_outside(n, dim))
-        return no_neighbor;
-    return to_index(n, dim);
-}
-
 )"};
 
 }  // namespace cl_sources

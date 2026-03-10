@@ -391,63 +391,30 @@ BOUNDARY_TEMPLATE(3);
 #define ENABLE_BOUNDARIES (1)
 
 float normal_waveguide_update(float prev_pressure,
-                              float current_pressure,
                               const global float* current,
-                              const global condensed_node* nodes,
                               int3 dimensions,
                               int3 locator);
 float normal_waveguide_update(float prev_pressure,
-                              float current_pressure,
                               const global float* current,
-                              const global condensed_node* nodes,
                               int3 dimensions,
                               int3 locator) {
-    //  Face neighbors (6).
-    float face_sum = 0;
+    float ret = 0;
     for (int i = 0; i != PORTS; ++i) {
         uint port_index = neighbor_index(locator, dimensions, i);
         if (port_index != no_neighbor) {
-            face_sum += current[port_index];
+            ret += current[port_index];
         }
     }
 
-    //  Edge-diagonal neighbors (12) for the 19-point IWB stencil.
-    //  Uses Kowalczyk & van Walstijn interpolated wideband weights:
-    //    face weight a = 1/3,  edge weight b = 1/6
-    //  At lambda^2 = 1/3 (same Courant number as 7-point), the update is:
-    //    p_next = (2/3)*p_n + face_sum/9 + edge_sum/18 - p_prev
-    //  Only used when ALL 12 edge neighbors are interior mesh nodes
-    //  (id_inside or id_reentrant) to avoid boundary impedance mismatch.
-    float edge_sum = 0;
-    int edge_count = 0;
-    for (int i = 0; i != EDGE_NEIGHBORS; ++i) {
-        uint idx = edge_neighbor_index(locator, dimensions, i);
-        if (idx != no_neighbor) {
-            int bt = nodes[idx].boundary_type;
-            if (bt == id_inside || bt == id_reentrant) {
-                edge_sum += current[idx];
-                edge_count++;
-            }
-        }
-    }
-
-    if (edge_count == EDGE_NEIGHBORS) {
-        //  Full 19-point IWB stencil (deep interior only).
-        return (2.0f / 3.0f) * current_pressure
-             + face_sum / 9.0f
-             + edge_sum / 18.0f
-             - prev_pressure;
-    } else {
-        //  Near mesh boundary: fall back to standard 7-point.
-        return face_sum / (PORTS / 2) - prev_pressure;
-    }
+    ret /= (PORTS / 2);
+    ret -= prev_pressure;
+    return ret;
 }
 
 float next_waveguide_pressure(
         const condensed_node node,
         const global condensed_node* nodes,
         float prev_pressure,
-        float current_pressure,
         const global float* current,
         int3 dimensions,
         int3 locator,
@@ -460,7 +427,6 @@ float next_waveguide_pressure(
         const condensed_node node,
         const global condensed_node* nodes,
         float prev_pressure,
-        float current_pressure,
         const global float* current,
         int3 dimensions,
         int3 locator,
@@ -476,7 +442,7 @@ float next_waveguide_pressure(
             if (node.boundary_type & id_inside ||
                 node.boundary_type & id_reentrant) {
                 return normal_waveguide_update(
-                        prev_pressure, current_pressure, current, nodes, dimensions, locator);
+                        prev_pressure, current, dimensions, locator);
             } else {
 #if ENABLE_BOUNDARIES
                 return boundary_1(current,
@@ -541,11 +507,9 @@ kernel void condensed_waveguide(
     const int3 locator = to_locator(index, dimensions);
 
     const float prev_pressure = previous[index];
-    const float current_pressure = current[index];
     const float next_pressure = next_waveguide_pressure(node,
                                                         nodes,
                                                         prev_pressure,
-                                                        current_pressure,
                                                         current,
                                                         dimensions,
                                                         locator,
