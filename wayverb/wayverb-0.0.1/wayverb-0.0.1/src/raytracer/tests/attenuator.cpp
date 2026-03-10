@@ -87,7 +87,7 @@ TEST(attenuator, hrtf) {
         {
             constexpr auto impulse_position = glm::vec3{-1, 0, 0};
             const auto impulse = make_impulse(
-                    bands_type{{1, 1, 1, 1, 1, 1, 1, 1}},
+                    bands_type{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}},
                     to_cl_float3{}(impulse_position),
                     glm::distance(impulse_position, receiver_position));
 
@@ -105,7 +105,7 @@ TEST(attenuator, hrtf) {
         {
             constexpr auto impulse_position = glm::vec3{1, 0, 0};
             const auto impulse = make_impulse(
-                    bands_type{{1, 1, 1, 1, 1, 1, 1, 1}},
+                    bands_type{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}},
                     to_cl_float3{}(impulse_position),
                     glm::distance(impulse_position, receiver_position));
 
@@ -123,7 +123,7 @@ TEST(attenuator, hrtf) {
         {
             constexpr auto impulse_position = glm::vec3{0, 2, 0};
             const auto impulse = make_impulse(
-                    bands_type{{1, 1, 1, 1, 1, 1, 1, 1}},
+                    bands_type{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}},
                     to_cl_float3{}(impulse_position),
                     glm::distance(impulse_position, receiver_position));
 

@@ -100,7 +100,7 @@ void image_source_test() {
         const auto upper = possible_upper == inexact_impulses.end()
                                    ? possible_upper
                                    : possible_upper + 1;
-        util::aligned::vector<impulse<8>> possibilities(lower, upper);
+        util::aligned::vector<impulse<wayverb::core::simulation_bands>> possibilities(lower, upper);
         if (std::none_of(lower, upper, [&](const auto& x) {
                 return approximately_matches(i, x);
             })) {

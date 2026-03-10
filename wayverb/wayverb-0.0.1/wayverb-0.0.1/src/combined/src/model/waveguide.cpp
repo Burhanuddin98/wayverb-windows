@@ -69,7 +69,7 @@ void multiple_band_waveguide::maintain_valid_cutoff() {
     data_.cutoff = std::max(data_.cutoff, band_params_.edges[data_.bands]);
 }
 
-const frequency_domain::edges_and_width_factor<9>
+const frequency_domain::edges_and_width_factor<hrtf_data::entry::bands + 1>
         multiple_band_waveguide::band_params_ =
                 hrtf_data::hrtf_band_params_hz();
 
@@ -129,6 +129,7 @@ double compute_sampling_frequency(const waveguide& waveguide) {
             //  mesh (a few nodes) and the waveguide run returns immediately.
             return 100.0;
     }
+    return 100.0;
 }
 
 }  // namespace model

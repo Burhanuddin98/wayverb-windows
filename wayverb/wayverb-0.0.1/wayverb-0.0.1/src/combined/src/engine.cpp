@@ -122,16 +122,16 @@ public:
             core::bands_type air_coeff{};
             const auto rt60 = core::sabine_reverb_time(
                     room_volume_, absorption, air_coeff);
-            //  Take the maximum RT60 across all 8 frequency bands.
+            //  Take the maximum RT60 across all frequency bands.
             //  Low-frequency bands typically have the longest decay.
             double max_rt = 0.0;
-            for (int i = 0; i < 8; ++i) {
+            for (int i = 0; i < core::simulation_bands; ++i) {
                 max_rt = std::max(max_rt, static_cast<double>(rt60.s[i]));
             }
             sabine_rt60_max_ = max_rt;
             fprintf(stderr,
-                    "[engine] Sabine RT60 max=%.2f s (across 8 bands)\n",
-                    sabine_rt60_max_);
+                    "[engine] Sabine RT60 max=%.2f s (across %d bands)\n",
+                    sabine_rt60_max_, core::simulation_bands);
             fflush(stderr);
         } catch (const std::exception& e) {
             fprintf(stderr,
@@ -214,7 +214,7 @@ public:
                 const auto cos_theta = glm::dot(dir / len, fwd);
                 const auto gain = model::directivity_gain(
                         source_directivity_, cos_theta);
-                for (int b = 0; b < 8; ++b) {
+                for (int b = 0; b < core::simulation_bands; ++b) {
                     imp.volume.s[b] *= gain;
                 }
                 ++weighted;

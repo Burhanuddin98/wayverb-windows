@@ -67,7 +67,7 @@ constexpr auto el_num = (180 / find_inc(b, e, elevation_functor{})) - 1;
 
 constexpr auto generate_hrtf_table() {
     using hrtf_table =
-            vector_look_up_table<std::array<std::array<double, 8>, 2>,
+            vector_look_up_table<std::array<std::array<double, hrtf_data::entry::bands>, 2>,
                                  az_num,
                                  el_num>;
 

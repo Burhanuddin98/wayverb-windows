@@ -121,7 +121,7 @@ typedef struct {
 };
 
 template <>
-struct core::cl_representation<raytracer::impulse<8>> final {
+struct core::cl_representation<raytracer::impulse<core::simulation_bands>> final {
     static constexpr auto value = R"(
 typedef struct {
     bands_type volume;
@@ -132,7 +132,7 @@ typedef struct {
 };
 
 template <>
-struct core::cl_representation<raytracer::attenuated_impulse<8>> final {
+struct core::cl_representation<raytracer::attenuated_impulse<core::simulation_bands>> final {
     static constexpr auto value = R"(
 typedef struct {
     bands_type volume;

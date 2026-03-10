@@ -168,7 +168,7 @@ program::program(const core::compute_context& cc)
                           core::cl_representation_v<core::triangle_inter>,
                           core::cl_representation_v<core::intersection>,
                           core::cl_representation_v<reflection>,
-                          core::cl_representation_v<impulse<8>>,
+                          core::cl_representation_v<impulse<core::simulation_bands>>,
                           core::cl_sources::geometry,
                           core::cl_sources::voxel,
                           ::cl_sources::brdf,

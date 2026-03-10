@@ -99,7 +99,8 @@ bands_type brdf_mags_for_outgoing(float3 specular,
 
 float mean(bands_type v);
 float mean(bands_type v) {
-    return (v.s0 + v.s1 + v.s2 + v.s3 + v.s4 + v.s5 + v.s6 + v.s7) / 8;
+    return (v.s0 + v.s1 + v.s2 + v.s3 + v.s4 + v.s5 + v.s6 + v.s7
+          + v.s8 + v.s9 + v.sa + v.sb + v.sc + v.sd + v.se + v.sf) / 16;
 }
 )"};
 }  // namespace cl_sources

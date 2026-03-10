@@ -829,10 +829,10 @@ private:
                     i->get_name().c_str(), surf.absorption.s[0], surf.scattering.s[0]);
             diag_log() << "  mat \"" << i->get_name()
                        << "\" abs=[";
-            for (int b = 0; b < 8; ++b)
+            for (int b = 0; b < wayverb::core::simulation_bands; ++b)
                 diag_log() << (b ? "," : "") << surf.absorption.s[b];
             diag_log() << "] scat=[";
-            for (int b = 0; b < 8; ++b)
+            for (int b = 0; b < wayverb::core::simulation_bands; ++b)
                 diag_log() << (b ? "," : "") << surf.scattering.s[b];
             diag_log() << "]\n";
             material_map[i->get_name()] = surf;

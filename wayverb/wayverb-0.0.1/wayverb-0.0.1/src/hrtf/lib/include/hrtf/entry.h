@@ -7,7 +7,7 @@
 namespace hrtf_data {
 
 struct entry final {
-    static constexpr size_t bands{8};
+    static constexpr size_t bands{16};
 
     int azimuth;
     int elevation;

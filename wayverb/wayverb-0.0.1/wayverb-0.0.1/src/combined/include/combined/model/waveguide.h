@@ -67,7 +67,7 @@ private:
         swap(data_, other.data_);
     };
 
-    static const frequency_domain::edges_and_width_factor<9> band_params_;
+    static const frequency_domain::edges_and_width_factor<hrtf_data::entry::bands + 1> band_params_;
 
     void maintain_valid_cutoff();
 

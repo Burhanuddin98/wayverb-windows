@@ -7,14 +7,14 @@ namespace wayverb {
 namespace core {
 
 /// If you change this, remember to update the cl_representation for bands_type
-constexpr auto simulation_bands = 8;
+constexpr auto simulation_bands = 16;
 
 using bands_type = detail::cl_vector_constructor_t<float, simulation_bands>;
 
 template <>
 struct cl_representation<bands_type> final {
     static constexpr auto value = R"(
-typedef float8 bands_type;
+typedef float16 bands_type;
 )";
 };
 

@@ -50,7 +50,7 @@ public:
             size_t num_directions) const;
     void accumulate(const image_source_group_processor& processor);
 
-    util::aligned::vector<impulse<8>> get_results() const;
+    util::aligned::vector<impulse<core::simulation_bands>> get_results() const;
 
 private:
     glm::vec3 source_;

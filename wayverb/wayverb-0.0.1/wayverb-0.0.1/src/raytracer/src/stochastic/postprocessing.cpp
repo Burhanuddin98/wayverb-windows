@@ -1,6 +1,8 @@
 #include "raytracer/stochastic/postprocessing.h"
 
 #include "core/cl/iterator.h"
+#include "core/cl/scene_structs.h"
+#include "core/cl/traits.h"
 #include "core/mixdown.h"
 #include "core/pressure_intensity.h"
 
@@ -96,7 +98,7 @@ util::aligned::vector<core::bands_type> weight_sequence(
                         ? core::intensity_to_pressure(
                                   smoothed[i] / squared_summed,
                                   acoustic_impedance)
-                        : cl_double8{};
+                        : detail::cl_vector_constructor_t<double, core::simulation_bands>{};
 
         std::for_each(begin(ret) + beg, begin(ret) + end, [&](auto& i) {
             i *= scale_factor;
@@ -233,8 +235,9 @@ util::aligned::vector<float> postprocessing(const energy_histogram& histogram,
     const auto params = hrtf_data::hrtf_band_params(sr);
 
     //  Band centre frequencies in Hz (geometric mean of edges).
-    std::array<double, 8> fc{};
-    for (int i = 0; i < 8; ++i) {
+    constexpr int NB = core::simulation_bands;
+    std::array<double, NB> fc{};
+    for (int i = 0; i < NB; ++i) {
         fc[i] = std::sqrt(params.edges[i] * params.edges[i + 1]) * sr;
     }
 
@@ -320,9 +323,9 @@ util::aligned::vector<float> postprocessing(const energy_histogram& histogram,
         const double alpha =
                 std::max(0.0, std::min(1.0, h_pos - static_cast<double>(i0)));
 
-        //  8-band intensity at this time (linear interpolation).
-        std::array<double, 8> energy{};
-        for (int b = 0; b < 8; ++b) {
+        //  Per-band intensity at this time (linear interpolation).
+        std::array<double, NB> energy{};
+        for (int b = 0; b < NB; ++b) {
             energy[b] = smoothed[i0].s[b] * (1.0 - alpha) +
                         smoothed[i1].s[b] * alpha;
         }
@@ -330,8 +333,8 @@ util::aligned::vector<float> postprocessing(const energy_histogram& histogram,
         //  Convert to PSD: intensity per unit Hz (not normalised frequency).
         //  Using Hz-based bandwidth prevents bass amplification from narrow
         //  log-spaced bands.
-        std::array<double, 8> psd{};
-        for (int b = 0; b < 8; ++b) {
+        std::array<double, NB> psd{};
+        for (int b = 0; b < NB; ++b) {
             const double bw_hz =
                     (params.edges[b + 1] - params.edges[b]) * sr;
             psd[b] = (bw_hz > 1.0) ? std::abs(energy[b]) / bw_hz : 0.0;
@@ -355,10 +358,10 @@ util::aligned::vector<float> postprocessing(const energy_histogram& histogram,
                      double ipsd = 0.0;
                      if (f_hz <= fc[0]) {
                          ipsd = psd[0];
-                     } else if (f_hz >= fc[7]) {
-                         ipsd = psd[7];
+                     } else if (f_hz >= fc[NB - 1]) {
+                         ipsd = psd[NB - 1];
                      } else {
-                         for (int b = 0; b < 7; ++b) {
+                         for (int b = 0; b < NB - 1; ++b) {
                              if (f_hz < fc[b + 1]) {
                                  const double lf = std::log(f_hz);
                                  const double l0 = std::log(fc[b]);

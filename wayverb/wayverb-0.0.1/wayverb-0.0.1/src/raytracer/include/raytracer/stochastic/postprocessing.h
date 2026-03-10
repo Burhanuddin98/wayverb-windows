@@ -19,14 +19,14 @@ namespace raytracer {
 namespace stochastic {
 
 template <typename T, size_t... Ix>
-constexpr auto array_to_bands_type(const std::array<T, 8>& t,
+constexpr auto array_to_bands_type(const std::array<T, core::simulation_bands>& t,
                                    std::index_sequence<Ix...>) {
     return core::bands_type{{static_cast<float>(t[Ix])...}};
 }
 
 template <typename T>
-constexpr auto array_to_bands_type(const std::array<T, 8>& t) {
-    return array_to_bands_type(t, std::make_index_sequence<8>{});
+constexpr auto array_to_bands_type(const std::array<T, core::simulation_bands>& t) {
+    return array_to_bands_type(t, std::make_index_sequence<core::simulation_bands>{});
 }
 
 /// See schroder2011 5.3.4., p.70

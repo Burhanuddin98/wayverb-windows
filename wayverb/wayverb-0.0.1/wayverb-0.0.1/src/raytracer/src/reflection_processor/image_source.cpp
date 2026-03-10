@@ -41,7 +41,7 @@ void image_source_processor::accumulate(
     }
 }
 
-util::aligned::vector<impulse<8>> image_source_processor::get_results() const {
+util::aligned::vector<impulse<core::simulation_bands>> image_source_processor::get_results() const {
     //  Fetch the image source results.
     auto ret = raytracer::image_source::postprocess_branches(
             begin(tree_.get_branches()),

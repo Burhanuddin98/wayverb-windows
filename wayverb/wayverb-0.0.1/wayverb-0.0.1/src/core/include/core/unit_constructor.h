@@ -34,6 +34,13 @@ struct unit_constructor<cl_float8> final {
             {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f}};
 };
 
+template <>
+struct unit_constructor<cl_float16> final {
+    static constexpr cl_float16 value{
+            {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+             1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f}};
+};
+
 template <typename T>
 constexpr auto unit_constructor_v = unit_constructor<T>::value;
 

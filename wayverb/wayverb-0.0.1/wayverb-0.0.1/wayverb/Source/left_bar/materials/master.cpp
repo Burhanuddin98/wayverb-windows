@@ -105,7 +105,7 @@ public:
     }
 
 private:
-    std::array<Label, 8> labels_;
+    std::array<Label, wayverb::core::simulation_bands> labels_;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
