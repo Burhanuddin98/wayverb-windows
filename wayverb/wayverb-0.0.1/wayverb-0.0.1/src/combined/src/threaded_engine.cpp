@@ -245,7 +245,9 @@ void complete_engine::do_run(core::compute_context compute_context,
                                           receiver->item()->get_position(),
                                           environment,
                                           persistent.raytracer().item()->get(),
-                                          poly_waveguide->clone()};
+                                          poly_waveguide->clone(),
+                                          source->item()->get_directivity(),
+                                          source->item()->get_orientation()};
 
                 fprintf(stderr, "[engine] do_run: postprocessing_engine created OK\n"); fflush(stderr);
 

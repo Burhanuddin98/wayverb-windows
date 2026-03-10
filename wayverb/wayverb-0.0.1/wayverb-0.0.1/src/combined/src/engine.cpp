@@ -1,4 +1,5 @@
 #include "combined/engine.h"
+#include "combined/model/source.h"
 #include "combined/postprocess.h"
 #include "combined/waveguide_base.h"
 
@@ -9,6 +10,7 @@
 #include "core/cl/common.h"
 #include "core/cl/scene_structs.h"
 #include "core/environment.h"
+#include "core/orientation.h"
 #include "core/reverb_time.h"
 #include "core/scene_data.h"
 
@@ -94,7 +96,9 @@ public:
          const glm::vec3& receiver,
          const core::environment& environment,
          const raytracer::simulation_parameters& raytracer,
-         std::unique_ptr<waveguide_base> waveguide)
+         std::unique_ptr<waveguide_base> waveguide,
+         model::directivity_pattern source_directivity,
+         const core::orientation& source_orientation)
             : compute_context_{compute_context}
             , voxels_and_mesh_{waveguide::compute_voxels_and_mesh(
                       compute_context,
@@ -107,7 +111,9 @@ public:
             , receiver_{receiver}
             , environment_{environment}
             , raytracer_{raytracer}
-            , waveguide_{std::move(waveguide)} {
+            , waveguide_{std::move(waveguide)}
+            , source_directivity_{source_directivity}
+            , source_orientation_{source_orientation} {
         //  Compute Sabine RT60 from scene geometry for physics-based
         //  waveguide duration.  This replaces the arbitrary 1.5x multiplier.
         try {
@@ -188,6 +194,39 @@ public:
         }
 
         engine_state_changed_(state::finishing_raytracer, 1.0);
+
+        //  Apply source directivity weighting to image source impulses.
+        //  Each impulse has a `position` field (the image source location).
+        //  The emission direction is source → image_source_position.
+        //  After multiple bounces, energy becomes diffuse, so directivity
+        //  primarily affects early reflections (image source path).
+        if (source_directivity_ !=
+            model::directivity_pattern::omnidirectional) {
+            const auto fwd = source_orientation_.get_pointing();
+            size_t weighted = 0;
+            for (auto& imp : raytracer_output->aural.image_source) {
+                const glm::vec3 imp_pos{imp.position.s[0],
+                                        imp.position.s[1],
+                                        imp.position.s[2]};
+                const auto dir = imp_pos - source_;
+                const auto len = glm::length(dir);
+                if (len < 1e-6f) continue;
+                const auto cos_theta = glm::dot(dir / len, fwd);
+                const auto gain = model::directivity_gain(
+                        source_directivity_, cos_theta);
+                for (int b = 0; b < 8; ++b) {
+                    imp.volume.s[b] *= gain;
+                }
+                ++weighted;
+            }
+            fprintf(stderr,
+                    "[engine] directivity weighting: pattern=%d, "
+                    "weighted %zu/%zu image source impulses\n",
+                    static_cast<int>(source_directivity_),
+                    weighted,
+                    raytracer_output->aural.image_source.size());
+            fflush(stderr);
+        }
 
         raytracer_reflections_generated_(std::move(raytracer_output->visual),
                                          source_);
@@ -298,6 +337,8 @@ private:
     core::environment environment_;
     mutable raytracer::simulation_parameters raytracer_;
     std::unique_ptr<waveguide_base> waveguide_;
+    model::directivity_pattern source_directivity_;
+    core::orientation source_orientation_;
 
     engine_state_changed engine_state_changed_;
     waveguide_node_pressures_changed waveguide_node_pressures_changed_;
@@ -312,14 +353,18 @@ engine::engine(const core::compute_context& compute_context,
                const glm::vec3& receiver,
                const core::environment& environment,
                const raytracer::simulation_parameters& raytracer,
-               std::unique_ptr<waveguide_base> waveguide)
+               std::unique_ptr<waveguide_base> waveguide,
+               model::directivity_pattern source_directivity,
+               const core::orientation& source_orientation)
         : pimpl_{std::make_unique<impl>(compute_context,
                                         scene_data,
                                         source,
                                         receiver,
                                         environment,
                                         raytracer,
-                                        std::move(waveguide))} {}
+                                        std::move(waveguide),
+                                        source_directivity,
+                                        source_orientation)} {}
 
 engine::~engine() noexcept = default;
 

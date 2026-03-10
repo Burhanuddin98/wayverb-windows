@@ -9,6 +9,48 @@
 namespace left_bar {
 namespace sources {
 
+////////////////////////////////////////////////////////////////////////////////
+
+/// Simple combo box property for source directivity pattern selection.
+class directivity_property final : public PropertyComponent,
+                                    public ComboBox::Listener {
+public:
+    using pattern_t = wayverb::combined::model::directivity_pattern;
+    using on_change_t = std::function<void(pattern_t)>;
+
+    directivity_property(const String& name)
+            : PropertyComponent(name, 25) {
+        combo_.addItem("omnidirectional", 1 + static_cast<int>(pattern_t::omnidirectional));
+        combo_.addItem("cardioid",       1 + static_cast<int>(pattern_t::cardioid));
+        combo_.addItem("supercardioid",  1 + static_cast<int>(pattern_t::supercardioid));
+        combo_.addItem("hypercardioid",  1 + static_cast<int>(pattern_t::hypercardioid));
+        combo_.addItem("figure-eight",   1 + static_cast<int>(pattern_t::figure_eight));
+        combo_.addItem("hemisphere",     1 + static_cast<int>(pattern_t::hemisphere));
+        combo_.addListener(this);
+        addAndMakeVisible(combo_);
+    }
+
+    void set(pattern_t p) {
+        combo_.setSelectedId(1 + static_cast<int>(p), dontSendNotification);
+    }
+
+    void connect_on_change(on_change_t cb) { on_change_ = std::move(cb); }
+
+    void refresh() override {}
+
+    void comboBoxChanged(ComboBox* cb) override {
+        if (on_change_) {
+            on_change_(static_cast<pattern_t>(cb->getSelectedId() - 1));
+        }
+    }
+
+private:
+    ComboBox combo_;
+    on_change_t on_change_;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+
 class source_editor final : public PropertyPanel {
 public:
     source_editor(wayverb::core::geo::box aabb,
@@ -18,11 +60,14 @@ public:
         //  Make properties.
         auto name = std::make_unique<text_property>("name");
         auto position = std::make_unique<vec3_property>("position", aabb_);
+        auto directivity = std::make_unique<directivity_property>("directivity");
 
         auto update_from_source =
-                [ this, n = name.get(), p = position.get() ](auto& source) {
+                [ this, n = name.get(), p = position.get(),
+                  d = directivity.get() ](auto& source) {
             n->set(source.get_name());
             p->set(source.get_position());
+            d->set(source.get_directivity());
         };
 
         update_from_source(*source_);
@@ -38,8 +83,12 @@ public:
         position->connect_on_change(
                 [this](auto&, auto pos) { source_->set_position(pos); });
 
+        directivity->connect_on_change(
+                [this](auto pattern) { source_->set_directivity(pattern); });
+
         addProperties({name.release()});
         addProperties({position.release()});
+        addProperties({directivity.release()});
 
         setSize(300, getTotalContentHeight());
     }

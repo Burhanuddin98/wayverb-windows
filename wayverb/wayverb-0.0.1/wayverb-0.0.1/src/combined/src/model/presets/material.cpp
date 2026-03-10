@@ -1,5 +1,10 @@
 #include "combined/model/presets/material.h"
 
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <sstream>
+
 namespace wayverb {
 namespace combined {
 namespace model {
@@ -172,6 +177,173 @@ const std::vector<material> materials{
         material{"Acoustic spray (fiber) 50mm", {{{0.0725, 0.1250, 0.1785, 0.3260, 0.4923, 0.5870, 0.6790, 0.7350}}, {{0.2280, 0.2258, 0.2425, 0.2435, 0.2520, 0.2610, 0.2632, 0.2850}}}},
 };
 // clang-format on
+
+////////////////////////////////////////////////////////////////////////////////
+
+bool save_materials_json(const std::vector<material>& mats,
+                         const std::string& path) {
+    FILE* fp = fopen(path.c_str(), "w");
+    if (!fp) return false;
+
+    fprintf(fp, "[\n");
+    for (size_t i = 0; i < mats.size(); ++i) {
+        const auto& m = mats[i];
+        const auto& surf = m.get_surface();
+        fprintf(fp, "  {\n");
+        fprintf(fp, "    \"name\": \"%s\",\n", m.get_name().c_str());
+
+        fprintf(fp, "    \"absorption\": [");
+        for (int b = 0; b < 8; ++b) {
+            fprintf(fp, b ? ", %.6f" : "%.6f", surf.absorption.s[b]);
+        }
+        fprintf(fp, "],\n");
+
+        fprintf(fp, "    \"scattering\": [");
+        for (int b = 0; b < 8; ++b) {
+            fprintf(fp, b ? ", %.6f" : "%.6f", surf.scattering.s[b]);
+        }
+        fprintf(fp, "]\n");
+
+        fprintf(fp, "  }%s\n", (i + 1 < mats.size()) ? "," : "");
+    }
+    fprintf(fp, "]\n");
+    fclose(fp);
+    return true;
+}
+
+namespace {
+
+// Skip whitespace and return next char, or EOF.
+int skip_ws(std::istream& in) {
+    int ch;
+    while ((ch = in.get()) != EOF && (ch == ' ' || ch == '\t' ||
+                                       ch == '\n' || ch == '\r'))
+        ;
+    return ch;
+}
+
+// Read a JSON string (assumes opening " already consumed).
+std::string read_json_string(std::istream& in) {
+    std::string result;
+    int ch;
+    while ((ch = in.get()) != EOF && ch != '"') {
+        if (ch == '\\') {
+            ch = in.get();
+            if (ch == '"') result += '"';
+            else if (ch == '\\') result += '\\';
+            else if (ch == 'n') result += '\n';
+            else { result += '\\'; result += static_cast<char>(ch); }
+        } else {
+            result += static_cast<char>(ch);
+        }
+    }
+    return result;
+}
+
+// Read a JSON number.
+float read_json_number(std::istream& in) {
+    std::string num;
+    int ch = in.peek();
+    while (ch != EOF && (ch == '-' || ch == '+' || ch == '.' ||
+                         ch == 'e' || ch == 'E' ||
+                         (ch >= '0' && ch <= '9'))) {
+        num += static_cast<char>(in.get());
+        ch = in.peek();
+    }
+    return std::stof(num);
+}
+
+// Read a JSON array of 8 floats (assumes opening [ already consumed).
+bool read_float8(std::istream& in, float out[8]) {
+    for (int i = 0; i < 8; ++i) {
+        skip_ws(in);
+        out[i] = read_json_number(in);
+        int ch = skip_ws(in);
+        if (i < 7 && ch != ',') return false;
+        if (i == 7 && ch != ']') { in.putback(ch); }
+    }
+    return true;
+}
+
+}  // namespace
+
+std::vector<material> load_materials_json(const std::string& path) {
+    std::ifstream file(path);
+    if (!file.is_open()) return {};
+
+    std::vector<material> result;
+
+    // Expect opening [
+    int ch = skip_ws(file);
+    if (ch != '[') return {};
+
+    while (true) {
+        ch = skip_ws(file);
+        if (ch == ']') break;       // End of array.
+        if (ch != '{') return {};   // Expect object start.
+
+        std::string name;
+        float absorption[8] = {};
+        float scattering[8] = {};
+        bool got_name = false, got_abs = false, got_scat = false;
+
+        // Read key-value pairs inside this object.
+        while (true) {
+            ch = skip_ws(file);
+            if (ch == '}') break;
+            if (ch == ',') ch = skip_ws(file);  // skip comma between fields
+            if (ch != '"') return {};
+
+            auto key = read_json_string(file);
+            ch = skip_ws(file);  // expect ':'
+            if (ch != ':') return {};
+
+            if (key == "name") {
+                ch = skip_ws(file);  // expect '"'
+                if (ch != '"') return {};
+                name = read_json_string(file);
+                got_name = true;
+            } else if (key == "absorption") {
+                ch = skip_ws(file);  // expect '['
+                if (ch != '[') return {};
+                if (!read_float8(file, absorption)) return {};
+                got_abs = true;
+            } else if (key == "scattering") {
+                ch = skip_ws(file);  // expect '['
+                if (ch != '[') return {};
+                if (!read_float8(file, scattering)) return {};
+                got_scat = true;
+            } else {
+                // Skip unknown value (simple: skip until , or }).
+                int depth = 0;
+                while ((ch = file.get()) != EOF) {
+                    if (ch == '{' || ch == '[') ++depth;
+                    else if (ch == '}' || ch == ']') {
+                        if (depth == 0) { file.putback(ch); break; }
+                        --depth;
+                    }
+                    else if (depth == 0 && ch == ',') { file.putback(ch); break; }
+                }
+            }
+        }
+
+        if (got_name && got_abs && got_scat) {
+            core::surface<core::simulation_bands> surf;
+            for (int b = 0; b < 8; ++b) {
+                surf.absorption.s[b] = absorption[b];
+                surf.scattering.s[b] = scattering[b];
+            }
+            result.emplace_back(name, surf);
+        }
+
+        ch = skip_ws(file);
+        if (ch == ',') continue;
+        if (ch == ']') break;
+        return {};  // unexpected
+    }
+
+    return result;
+}
 
 }  // namespace presets
 }  // namespace model

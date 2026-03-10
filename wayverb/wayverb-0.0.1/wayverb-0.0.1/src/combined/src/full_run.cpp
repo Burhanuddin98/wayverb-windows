@@ -11,14 +11,18 @@ postprocessing_engine::postprocessing_engine(
         const glm::vec3& receiver,
         const core::environment& environment,
         const raytracer::simulation_parameters& raytracer,
-        std::unique_ptr<waveguide_base> waveguide)
+        std::unique_ptr<waveguide_base> waveguide,
+        model::directivity_pattern source_directivity,
+        const core::orientation& source_orientation)
         : engine_{compute_context,
                   scene_data,
                   source,
                   receiver,
                   environment,
                   raytracer,
-                  std::move(waveguide)} {}
+                  std::move(waveguide),
+                  source_directivity,
+                  source_orientation} {}
 
 postprocessing_engine::engine_state_changed::connection
 postprocessing_engine::connect_engine_state_changed(

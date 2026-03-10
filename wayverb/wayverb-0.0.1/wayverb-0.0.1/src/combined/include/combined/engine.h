@@ -1,5 +1,7 @@
 #pragma once
 
+#include "combined/model/source.h"
+
 #include "raytracer/cl/reflection.h"
 
 #include "core/gpu_scene_data.h"
@@ -97,7 +99,10 @@ public:
            const glm::vec3& receiver,
            const core::environment& environment,
            const raytracer::simulation_parameters& raytracer,
-           std::unique_ptr<waveguide_base> waveguide);
+           std::unique_ptr<waveguide_base> waveguide,
+           model::directivity_pattern source_directivity =
+                   model::directivity_pattern::omnidirectional,
+           const core::orientation& source_orientation = core::orientation{});
 
     ~engine() noexcept;
 

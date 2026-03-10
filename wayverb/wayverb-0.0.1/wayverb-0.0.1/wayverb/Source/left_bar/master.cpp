@@ -11,6 +11,9 @@
 
 #include "utilities/string_builder.h"
 
+#include <cmath>
+#include <cstdio>
+
 namespace {
 
 //  Allows a generic component to be placed in a property panel.
@@ -198,13 +201,25 @@ master::master(main_model& model)
         })}
         , engine_state_connection_{model_.connect_engine_state(
                   [this](auto run, auto runs, auto state, auto progress) {
+                      std::string convergence;
+                      if (state == wayverb::combined::state::running_raytracer
+                          && progress > 0.01) {
+                          //  Monte Carlo error ∝ 1/sqrt(N).
+                          //  Show relative convergence as a percentage.
+                          const auto conv = 100.0 * (1.0 - 1.0 / std::sqrt(
+                              std::max(1.0, progress * 100000.0)));
+                          char buf[32];
+                          snprintf(buf, sizeof(buf), " [%.0f%% conv]", conv);
+                          convergence = buf;
+                      }
                       bottom_.set_bar_text(util::build_string(
                               "Run ",
                               run + 1,
                               " / ",
                               runs,
                               ": ",
-                              wayverb::combined::to_string(state)));
+                              wayverb::combined::to_string(state),
+                              convergence));
                       bottom_.set_progress(progress);
                   })}
         , finished_connection_{model_.connect_finished([this] {

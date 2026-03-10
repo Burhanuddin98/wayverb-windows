@@ -911,6 +911,26 @@ main_model::main_model(const std::string& name)
         , capsule_presets{wayverb::combined::model::presets::capsules}
         , currently_open_file_{name}
         , pimpl_{std::make_unique<impl>()} {
+    // Try loading materials from external JSON (allows user customization).
+    {
+        auto exe_dir = juce::File::getSpecialLocation(
+                juce::File::currentExecutableFile).getParentDirectory();
+        auto json_path = exe_dir.getChildFile("materials.json")
+                                 .getFullPathName().toStdString();
+        auto loaded = wayverb::combined::model::presets::load_materials_json(
+                json_path);
+        if (!loaded.empty()) {
+            material_presets = std::move(loaded);
+            diag_log() << "[main_model] loaded " << material_presets.size()
+                       << " materials from " << json_path << "\n";
+        } else {
+            // Use hardcoded presets and write the JSON for future editing.
+            wayverb::combined::model::presets::save_materials_json(
+                    material_presets, json_path);
+            diag_log() << "[main_model] wrote " << material_presets.size()
+                       << " materials to " << json_path << "\n";
+        }
+    }
     // Sort material presets alphabetically by name
     {
         // Build sorted index (material's copy-assign notifies observers,

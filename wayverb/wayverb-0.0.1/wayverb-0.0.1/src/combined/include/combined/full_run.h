@@ -20,7 +20,11 @@ public:
                           const glm::vec3& receiver,
                           const core::environment& environment,
                           const raytracer::simulation_parameters& raytracer,
-                          std::unique_ptr<waveguide_base> waveguide);
+                          std::unique_ptr<waveguide_base> waveguide,
+                          model::directivity_pattern source_directivity =
+                                  model::directivity_pattern::omnidirectional,
+                          const core::orientation& source_orientation =
+                                  core::orientation{});
 
     postprocessing_engine(const postprocessing_engine&) = delete;
     postprocessing_engine(postprocessing_engine&&) noexcept = delete;

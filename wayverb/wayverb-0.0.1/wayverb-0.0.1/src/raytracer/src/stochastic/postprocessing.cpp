@@ -106,14 +106,61 @@ util::aligned::vector<core::bands_type> weight_sequence(
     return ret;
 }
 
-/// ISO 9613-1 air absorption coefficient (simplified).
+/// Full ISO 9613-1:1993 atmospheric absorption coefficient.
 /// Returns absorption in Nepers/metre at the given frequency.
-/// Assumes 20°C, 50% relative humidity, 101.325 kPa.
-static double air_absorption_nepers(double freq_hz) {
-    //  Simplified model: alpha ≈ 3.21e-10 × f² (Np/m) at standard conditions.
-    //  This gives ~0.003 Np/m at 1 kHz, ~0.05 Np/m at 4 kHz, ~0.32 Np/m at
-    //  10 kHz — matching ISO 9613-1 Table 1 within 20%.
-    return 3.21e-10 * freq_hz * freq_hz;
+///
+/// Parameters:
+///   freq_hz  — frequency in Hz
+///   T_kelvin — temperature in Kelvin (default 293.15 = 20°C)
+///   humidity — relative humidity in percent (default 50%)
+///   p_atm    — atmospheric pressure in kPa (default 101.325)
+///
+/// Reference: ISO 9613-1:1993 "Acoustics — Attenuation of sound during
+///            propagation outdoors — Part 1: Calculation of the absorption
+///            of sound by the atmosphere"
+static double air_absorption_nepers(double freq_hz,
+                                     double T_kelvin = 293.15,
+                                     double humidity = 50.0,
+                                     double p_atm = 101.325) {
+    //  Reference conditions
+    constexpr double T_ref = 293.15;   //  20°C in Kelvin
+    constexpr double T_01  = 273.16;   //  Triple point of water
+    constexpr double p_ref = 101.325;  //  Standard atmosphere (kPa)
+
+    const double T_rel = T_kelvin / T_ref;
+    const double p_rel = p_atm / p_ref;
+    const double f = freq_hz;
+
+    //  Saturation vapour pressure ratio (ISO 9613-1, Eq. 3)
+    //  C = -6.8346 × (T_01/T)^1.261 + 4.6151
+    const double C = -6.8346 * std::pow(T_01 / T_kelvin, 1.261) + 4.6151;
+    const double h = humidity * std::pow(10.0, C) * (p_ref / p_atm);
+
+    //  Oxygen relaxation frequency (ISO 9613-1, Eq. 4)
+    const double fr_O = (p_rel) * (24.0 + 4.04e4 * h *
+            (0.02 + h) / (0.391 + h));
+
+    //  Nitrogen relaxation frequency (ISO 9613-1, Eq. 5)
+    const double fr_N = (p_rel) * std::pow(T_rel, -0.5) *
+            (9.0 + 280.0 * h * std::exp(-4.170 * (std::pow(T_rel, -1.0/3.0) - 1.0)));
+
+    //  Absorption coefficient in dB/m (ISO 9613-1, Eq. 1)
+    const double alpha_dB =
+            8.686 * f * f * (
+                //  Classical + rotational absorption
+                1.84e-11 * (1.0 / p_rel) * std::pow(T_rel, 0.5)
+                //  Vibrational: oxygen relaxation
+                + std::pow(T_rel, -2.5) * (
+                    0.01275 * std::exp(-2239.1 / T_kelvin) /
+                        (fr_O + f * f / fr_O)
+                //  Vibrational: nitrogen relaxation
+                    + 0.10680 * std::exp(-3352.0 / T_kelvin) /
+                        (fr_N + f * f / fr_N)
+                )
+            );
+
+    //  Convert dB/m to Nepers/m:  1 Np = 8.686 dB
+    return alpha_dB / 8.686;
 }
 
 /// Compute the mixing time for a room (Kuttruff formula).
