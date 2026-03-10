@@ -48,5 +48,5 @@ private:
 
     wants_to_close wants_to_close_;
 
-    std::unique_ptr<ResultsWindow> results_window_;
+    std::vector<std::unique_ptr<ResultsWindow>> results_windows_;
 };

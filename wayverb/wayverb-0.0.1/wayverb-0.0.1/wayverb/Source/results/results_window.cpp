@@ -11,6 +11,14 @@
 #include <numeric>
 #include <algorithm>
 
+// ── Popout window subclass with working close + wayverb title bar ───────────
+class PopoutWindow : public DocumentWindow {
+public:
+    PopoutWindow(const String& name, Colour bg, int buttons)
+        : DocumentWindow(name, bg, buttons) {}
+    void closeButtonPressed() override { setVisible(false); }
+};
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Inferno colormap (outside anonymous namespace — used by SpectrogramDisplay)
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1386,16 +1394,46 @@ ResultsContent::ResultsContent() {
     lufs_label_.setColour(Label::textColourId, wv_theme::text_dim);
     addAndMakeVisible(lufs_label_);
 
+    styleBtn(save_all_btn_, wv_theme::bg_panel, wv_theme::cyan);
+
     auralize_btn_.addListener(this);
     play_dry_btn_.addListener(this);
     play_conv_btn_.addListener(this);
     stop_btn_.addListener(this);
+    styleBtn(test_signal_btn_, wv_theme::bg_panel, wv_theme::green);
+
     loudness_mode_btn_.addListener(this);
+    save_all_btn_.addListener(this);
+    test_signal_btn_.addListener(this);
     addAndMakeVisible(auralize_btn_);
     addAndMakeVisible(play_dry_btn_);
     addAndMakeVisible(play_conv_btn_);
     addAndMakeVisible(stop_btn_);
     addAndMakeVisible(loudness_mode_btn_);
+    addAndMakeVisible(save_all_btn_);
+    addAndMakeVisible(test_signal_btn_);
+
+    // ── Popout buttons (one per plot, overlaid on top-right corner) ──
+    Component* plots[] = {
+        &ir_waveform_L_, &schroeder_L_, &ir_spectrogram_L_, &ir_spectrum_L_,
+        &ir_waveform_R_, &schroeder_R_, &ir_spectrogram_R_, &ir_spectrum_R_,
+        &dry_waveform_, &dry_spectrogram_,
+        &conv_waveform_L_, &conv_spectrogram_L_,
+        &conv_waveform_R_, &conv_spectrogram_R_,
+        &metrics_table_
+    };
+    for (auto* p : plots) {
+        auto* btn = new TextButton("Pop");
+        btn->setColour(TextButton::buttonColourId,
+                        wv_theme::bg_panel.withAlpha(0.8f));
+        btn->setColour(TextButton::textColourOffId, wv_theme::cyan);
+        btn->setSize(32, 16);
+        btn->addListener(this);
+        addAndMakeVisible(btn);
+        int idx = popout_btns_.size();
+        popout_btns_.add(btn);
+        popout_entries_.push_back({p, idx});
+    }
 
     // Playback engine
     source_player_.setSource(&transport_);
@@ -1511,8 +1549,13 @@ void ResultsContent::loadDryAndConvolve() {
                         "*.wav;*.aif;*.aiff;*.flac;*.mp3");
     if (!chooser.browseForFileToOpen()) return;
 
+    convolveWithFile(chooser.getResult());
+}
+
+void ResultsContent::convolveWithFile(const File& file) {
+    if (ir_channels_.empty() || !file.existsAsFile()) return;
+
     DefaultAudioFormatManager fmt_mgr;
-    auto file = chooser.getResult();
     std::unique_ptr<AudioFormatReader> reader(fmt_mgr.createReaderFor(file));
     if (!reader) {
         AlertWindow::showMessageBoxAsync(AlertWindow::WarningIcon,
@@ -1677,6 +1720,33 @@ void ResultsContent::buttonClicked(Button* b) {
         startPlayback(conv_buffer_, dry_rate_);
     } else if (b == &stop_btn_) {
         transport_.stop();
+    } else if (b == &save_all_btn_) {
+        saveAllToFolder();
+    } else if (b == &test_signal_btn_) {
+        // Find test_signals folder relative to executable
+        File exeDir = File::getSpecialLocation(File::currentExecutableFile)
+                          .getParentDirectory();
+        File tsDir = exeDir.getChildFile("test_signals");
+
+        PopupMenu menu;
+        menu.addItem(1, "Linear Sweep (20 Hz - 20 kHz)");
+        menu.addItem(2, "Log Sweep (20 Hz - 20 kHz)");
+        int choice = menu.show();
+
+        File target;
+        if (choice == 1)
+            target = tsDir.getChildFile("linear_sweep.wav");
+        else if (choice == 2)
+            target = tsDir.getChildFile("log_sweep.wav");
+
+        if (target.existsAsFile()) {
+            convolveWithFile(target);
+        } else if (choice > 0) {
+            AlertWindow::showMessageBoxAsync(
+                    AlertWindow::WarningIcon, "Not Found",
+                    "Test signal not found at:\n" + target.getFullPathName()
+                    + "\n\nPlace linear_sweep.wav / log_sweep.wav in test_signals/ next to wayverb.exe");
+        }
     } else if (b == &loudness_mode_btn_) {
         match_dry_loudness_ = !match_dry_loudness_;
         loudness_mode_btn_.setButtonText(
@@ -1735,7 +1805,269 @@ void ResultsContent::buttonClicked(Button* b) {
             }
             repaint();
         }
+    } else {
+        // Check popout buttons
+        for (auto& pe : popout_entries_) {
+            if (b == popout_btns_[pe.btn_idx]) {
+                openPopout(pe.plot);
+                return;
+            }
+        }
     }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Popout plot window
+// ═════════════════════════════════════════════════════════════════════════════
+
+void ResultsContent::openPopout(Component* source) {
+    String title;
+    Component* newPlot = nullptr;
+
+    // Helpers to create each plot type with data
+    auto makeWave = [](const std::vector<float>& d, double sr,
+                       const String& lbl) -> Component* {
+        auto* p = new WaveformDisplay();
+        p->setData(d, sr, lbl);
+        return p;
+    };
+    auto makeEDC = [](const std::vector<float>& d, double sr) -> Component* {
+        auto* p = new SchroederDisplay();
+        p->setData(d, sr);
+        return p;
+    };
+    auto makeSpectro = [](const std::vector<float>& d, double sr) -> Component* {
+        auto* p = new SpectrogramDisplay();
+        p->setData(d, sr);
+        return p;
+    };
+    auto makeSpectrum = [](const std::vector<float>& d, double sr) -> Component* {
+        auto* p = new SpectrumDisplay();
+        p->setData(d, sr);
+        return p;
+    };
+
+    // IR Left / Mono
+    if (source == &ir_waveform_L_ && !ir_channels_.empty()) {
+        title = is_stereo_ ? "IR Waveform (Left)" : "IR Waveform";
+        newPlot = makeWave(ir_channels_[0].samples, sample_rate_, title);
+    } else if (source == &schroeder_L_ && !ir_channels_.empty()) {
+        title = is_stereo_ ? "Energy Decay (Left)" : "Energy Decay";
+        newPlot = makeEDC(ir_channels_[0].samples, sample_rate_);
+    } else if (source == &ir_spectrogram_L_ && !ir_channels_.empty()) {
+        title = is_stereo_ ? "IR Spectrogram (Left)" : "IR Spectrogram";
+        newPlot = makeSpectro(ir_channels_[0].samples, sample_rate_);
+    } else if (source == &ir_spectrum_L_ && !ir_channels_.empty()) {
+        title = is_stereo_ ? "Frequency Response (Left)" : "Frequency Response";
+        newPlot = makeSpectrum(ir_channels_[0].samples, sample_rate_);
+    }
+    // IR Right
+    else if (source == &ir_waveform_R_ && ir_channels_.size() >= 2) {
+        title = "IR Waveform (Right)";
+        newPlot = makeWave(ir_channels_[1].samples, sample_rate_, title);
+    } else if (source == &schroeder_R_ && ir_channels_.size() >= 2) {
+        title = "Energy Decay (Right)";
+        newPlot = makeEDC(ir_channels_[1].samples, sample_rate_);
+    } else if (source == &ir_spectrogram_R_ && ir_channels_.size() >= 2) {
+        title = "IR Spectrogram (Right)";
+        newPlot = makeSpectro(ir_channels_[1].samples, sample_rate_);
+    } else if (source == &ir_spectrum_R_ && ir_channels_.size() >= 2) {
+        title = "Frequency Response (Right)";
+        newPlot = makeSpectrum(ir_channels_[1].samples, sample_rate_);
+    }
+    // Dry
+    else if (source == &dry_waveform_ && has_dry_) {
+        title = "Dry Audio";
+        newPlot = makeWave(dry_samples_, dry_rate_, title);
+    } else if (source == &dry_spectrogram_ && has_dry_) {
+        title = "Dry Spectrogram";
+        newPlot = makeSpectro(dry_samples_, dry_rate_);
+    }
+    // Convolved L
+    else if (source == &conv_waveform_L_ && has_dry_) {
+        title = is_stereo_ ? "Convolved (Left)" : "Convolved";
+        newPlot = makeWave(conv_samples_L_, dry_rate_, title);
+    } else if (source == &conv_spectrogram_L_ && has_dry_) {
+        title = is_stereo_ ? "Convolved Spectrogram (Left)" : "Convolved Spectrogram";
+        newPlot = makeSpectro(conv_samples_L_, dry_rate_);
+    }
+    // Convolved R
+    else if (source == &conv_waveform_R_ && has_dry_ && !conv_samples_R_.empty()) {
+        title = "Convolved (Right)";
+        newPlot = makeWave(conv_samples_R_, dry_rate_, title);
+    } else if (source == &conv_spectrogram_R_ && has_dry_ && !conv_samples_R_.empty()) {
+        title = "Convolved Spectrogram (Right)";
+        newPlot = makeSpectro(conv_samples_R_, dry_rate_);
+    }
+    // Metrics table
+    else if (source == &metrics_table_) {
+        title = "ISO 3382 Metrics";
+        auto* p = new MetricsTableDisplay();
+        p->setMetrics(metrics_);
+        newPlot = p;
+    }
+
+    if (!newPlot) return;
+
+    auto* win = new PopoutWindow(title, wv_theme::bg_dark,
+                                 DocumentWindow::allButtons);
+    win->setContentOwned(newPlot, false);
+    newPlot->setSize(700, 400);
+    win->centreWithSize(700, 400);
+    win->setResizable(true, true);
+    win->setResizeLimits(300, 150, 4000, 4000);
+    win->setUsingNativeTitleBar(true);
+
+    // Wayverb icon
+    auto icon = ImageCache::getFromMemory(BinaryData::wayverb_png,
+                                          BinaryData::wayverb_pngSize);
+    win->setIcon(icon);
+
+#ifdef _WIN32
+    // Purple title bar via DWM
+    win->setVisible(true);
+    if (auto* peer = win->getPeer()) {
+        HWND hwnd = (HWND)peer->getNativeHandle();
+        constexpr DWORD DWMWA_CAPTION_COLOR_VAL = 35;
+        // BGR colour: 0x8a2be2 (blueviolet) → B=0x8a, G=0x2b, R=0xe2
+        COLORREF purple = RGB(0x8a, 0x2b, 0xe2);
+        DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR_VAL,
+                              &purple, sizeof(purple));
+    }
+#else
+    win->setVisible(true);
+#endif
+    win->toFront(true);
+
+    popout_windows_.add(win);
+}
+
+void ResultsContent::saveAllToFolder() {
+    FileChooser chooser("Choose export folder...",
+                        File::getSpecialLocation(File::userDesktopDirectory));
+    if (!chooser.browseForDirectory()) return;
+
+    File folder = chooser.getResult();
+
+    // ── Helper: save a component as 2x PNG ──
+    auto savePNG = [&](Component& comp, const String& name) {
+        if (!comp.isVisible() || comp.getWidth() <= 0) return;
+        auto img = comp.createComponentSnapshot(comp.getLocalBounds(), true, 2.0f);
+        File f = folder.getChildFile(name + ".png");
+        FileOutputStream fos(f);
+        if (fos.openedOk()) {
+            PNGImageFormat png;
+            png.writeImageToStream(img, fos);
+        }
+    };
+
+    // ── Helper: save float samples as 24-bit WAV ──
+    auto saveWAV = [&](const std::vector<float>& samples, double sr,
+                       const String& name) {
+        if (samples.empty()) return;
+        File f = folder.getChildFile(name + ".wav");
+        f.deleteFile();
+        auto* fos = new FileOutputStream(f);
+        if (!fos->openedOk()) { delete fos; return; }
+        WavAudioFormat wav;
+        std::unique_ptr<AudioFormatWriter> writer(
+                wav.createWriterFor(fos, sr, 1, 24, {}, 0));
+        if (writer) {
+            AudioBuffer<float> buf(1, int(samples.size()));
+            buf.copyFrom(0, 0, samples.data(), int(samples.size()));
+            writer->writeFromAudioSampleBuffer(buf, 0, buf.getNumSamples());
+        }
+    };
+
+    // ── Helper: save AudioBuffer as WAV ──
+    auto saveBufferWAV = [&](const AudioBuffer<float>& buf, double sr,
+                             const String& name) {
+        if (buf.getNumSamples() <= 0) return;
+        File f = folder.getChildFile(name + ".wav");
+        f.deleteFile();
+        auto* fos = new FileOutputStream(f);
+        if (!fos->openedOk()) { delete fos; return; }
+        WavAudioFormat wav;
+        std::unique_ptr<AudioFormatWriter> writer(
+                wav.createWriterFor(fos, sr, buf.getNumChannels(), 24, {}, 0));
+        if (writer)
+            writer->writeFromAudioSampleBuffer(buf, 0, buf.getNumSamples());
+    };
+
+    // ── Save plot PNGs ──
+    savePNG(metrics_table_, "metrics_table");
+    savePNG(ir_waveform_L_, "ir_waveform_L");
+    savePNG(schroeder_L_, "edc_L");
+    savePNG(ir_spectrogram_L_, "ir_spectrogram_L");
+    savePNG(ir_spectrum_L_, "ir_spectrum_L");
+
+    if (is_stereo_) {
+        savePNG(ir_waveform_R_, "ir_waveform_R");
+        savePNG(schroeder_R_, "edc_R");
+        savePNG(ir_spectrogram_R_, "ir_spectrogram_R");
+        savePNG(ir_spectrum_R_, "ir_spectrum_R");
+    }
+
+    if (has_dry_) {
+        savePNG(dry_waveform_, "dry_waveform");
+        savePNG(dry_spectrogram_, "dry_spectrogram");
+        savePNG(conv_waveform_L_, "conv_waveform_L");
+        savePNG(conv_spectrogram_L_, "conv_spectrogram_L");
+        if (is_stereo_) {
+            savePNG(conv_waveform_R_, "conv_waveform_R");
+            savePNG(conv_spectrogram_R_, "conv_spectrogram_R");
+        }
+    }
+
+    // ── Save IR WAV files ──
+    if (!ir_channels_.empty())
+        saveWAV(ir_channels_[0].samples, sample_rate_, "ir_L");
+    if (is_stereo_ && ir_channels_.size() >= 2)
+        saveWAV(ir_channels_[1].samples, sample_rate_, "ir_R");
+
+    // ── Save dry + convolved WAV ──
+    if (has_dry_) {
+        saveBufferWAV(dry_buffer_, dry_rate_, "dry_audio");
+        saveBufferWAV(conv_buffer_, dry_rate_, "convolved");
+    }
+
+    // ── Save ISO 3382 metrics CSV ──
+    {
+        File f = folder.getChildFile("metrics_iso3382.csv");
+        FileOutputStream fos(f);
+        if (fos.openedOk()) {
+            fos.writeText("Parameter,125Hz,250Hz,500Hz,1kHz,2kHz,4kHz,Broadband\n",
+                          false, false);
+            auto row = [&](const char* name, const double* bands, double broad,
+                           int dec) {
+                String line;
+                line << name;
+                for (int b = 0; b < kNumBands; ++b)
+                    line << "," << String(bands[b], dec);
+                line << "," << String(broad, dec) << "\n";
+                fos.writeText(line, false, false);
+            };
+            row("RT60 (s)", metrics_.band_rt60, metrics_.rt60, 3);
+            row("T30 (s)", metrics_.band_t30, metrics_.t30, 3);
+            row("EDT (s)", metrics_.band_edt, metrics_.edt, 3);
+            row("C80 (dB)", metrics_.band_c80, metrics_.c80, 1);
+            row("C50 (dB)", metrics_.band_c50, metrics_.c50, 1);
+            row("D50 (%)", metrics_.band_d50, metrics_.d50, 1);
+            row("Ts (ms)", metrics_.band_ts, metrics_.ts, 0);
+            fos.writeText("Bass Ratio,,,,,,," + String(metrics_.br, 3) + "\n",
+                          false, false);
+            if (dry_lufs_ > -90.0) {
+                fos.writeText("\nDry LUFS," + String(dry_lufs_, 1) + "\n",
+                              false, false);
+                fos.writeText("Conv LUFS," + String(conv_lufs_, 1) + "\n",
+                              false, false);
+            }
+        }
+    }
+
+    AlertWindow::showMessageBoxAsync(
+            AlertWindow::InfoIcon, "Export Complete",
+            "All results saved to:\n" + folder.getFullPathName());
 }
 
 void ResultsContent::paint(Graphics& g) {
@@ -1752,180 +2084,142 @@ void ResultsContent::paint(Graphics& g) {
 }
 
 void ResultsContent::resized() {
-    auto area = getLocalBounds().reduced(10);
+    const int W = getWidth();
+    const int pad = 10;
+    const int usableW = W - 2 * pad;
+    const int plotH = 210;
+    const int metricsH = 200;
+    const int ctrlH = 28;
+    const int gap = 6;
+    const int colGap = 6;  // gap between L/R columns
 
-    // ── Row 1: Title + metrics ──
-    auto titleRow = area.removeFromTop(22);
-    title_label_.setBounds(titleRow.removeFromLeft(170));
-    titleRow.removeFromLeft(8);
-    metrics_label_.setBounds(titleRow);
-    area.removeFromTop(4);
-
-    // ── Row 2: Buttons + transport ──
-    auto ctrlRow = area.removeFromTop(28);
-    auralize_btn_.setBounds(ctrlRow.removeFromLeft(100));
-    ctrlRow.removeFromLeft(6);
-    play_dry_btn_.setBounds(ctrlRow.removeFromLeft(80));
-    ctrlRow.removeFromLeft(4);
-    play_conv_btn_.setBounds(ctrlRow.removeFromLeft(110));
-    ctrlRow.removeFromLeft(4);
-    stop_btn_.setBounds(ctrlRow.removeFromLeft(50));
-    ctrlRow.removeFromLeft(8);
-    loudness_mode_btn_.setBounds(ctrlRow.removeFromLeft(140));
-    area.removeFromTop(4);
-
-    // ── Row 2b: LUFS display ──
-    auto lufsRow = area.removeFromTop(16);
-    lufs_label_.setBounds(lufsRow);
-    area.removeFromTop(2);
-
-    // ── Row 3: ISO 3382 metrics table ──
-    constexpr int metricsH = 180;
-    metrics_table_.setBounds(area.removeFromTop(metricsH));
-    area.removeFromTop(4);
-
-    // ── Bottom: Transport bar ──
-    auto transportArea = area.removeFromBottom(32);
-    transport_bar_->setBounds(transportArea);
-    area.removeFromBottom(8);
-
-    // ── Remaining space ──
-    int remaining = area.getHeight();
+    // ── Calculate total content height ──
+    int totalH = pad;
+    totalH += 22 + gap;       // title row
+    totalH += ctrlH + gap;    // buttons
+    totalH += 16 + gap;       // LUFS
+    totalH += metricsH + gap; // metrics table
 
     if (is_stereo_) {
-        // ════════════════════════════════════════════════════════════════
-        // STEREO LAYOUT: L column | R column, each with its own displays
-        // ════════════════════════════════════════════════════════════════
-        if (has_dry_) {
-            // Split: IR section ~45%, comparison ~55%
-            int irH = int(remaining * 0.45);
-            int compH = remaining - irH - 4;
-
-            auto irArea = area.removeFromTop(irH);
-            area.removeFromTop(4);
-            auto compArea = area;
-
-            // IR: 2 columns (L | R), each with 2 rows (waveform+spectrogram, EDC+spectrum)
-            int irColW = (irArea.getWidth() - 4) / 2;
-            int irRowH = (irH - 4) / 2;
-
-            // Left IR column
-            ir_waveform_L_.setBounds(irArea.getX(), irArea.getY(), irColW, irRowH);
-            ir_spectrogram_L_.setBounds(irArea.getX(), irArea.getY() + irRowH + 4,
-                                        irColW, irRowH);
-
-            // Right IR column
-            int rX = irArea.getX() + irColW + 4;
-            ir_waveform_R_.setBounds(rX, irArea.getY(), irColW, irRowH);
-            ir_spectrogram_R_.setBounds(rX, irArea.getY() + irRowH + 4,
-                                        irColW, irRowH);
-
-            // EDC and spectrum share bottom of each column — put them below spectrograms
-            // Actually, for stereo we show waveform+spectrogram per ear in IR,
-            // and put EDC + spectrum in a shared row below.
-            // Better: use scrollable or just show L EDC + R EDC side by side.
-            // For now, hide the individual EDC/spectrum in stereo mode since we have
-            // 4 IR panels + comparison below. Show them only in mono mode.
-            schroeder_L_.setVisible(false);
-            ir_spectrum_L_.setVisible(false);
-            schroeder_R_.setVisible(false);
-            ir_spectrum_R_.setVisible(false);
-
-            // Comparison: 3 columns (dry | conv L | conv R)
-            int compCols = 3;
-            int compColW = (compArea.getWidth() - 4 * (compCols - 1)) / compCols;
-            int compRowH = (compH - 4) / 2;
-
-            // Dry column
-            dry_waveform_.setBounds(compArea.getX(), compArea.getY(),
-                                    compColW, compRowH);
-            dry_spectrogram_.setBounds(compArea.getX(),
-                                       compArea.getY() + compRowH + 4,
-                                       compColW, compRowH);
-
-            // Convolved L column
-            int cLx = compArea.getX() + compColW + 4;
-            conv_waveform_L_.setBounds(cLx, compArea.getY(), compColW, compRowH);
-            conv_spectrogram_L_.setBounds(cLx, compArea.getY() + compRowH + 4,
-                                          compColW, compRowH);
-
-            // Convolved R column
-            int cRx = cLx + compColW + 4;
-            conv_waveform_R_.setBounds(cRx, compArea.getY(), compColW, compRowH);
-            conv_spectrogram_R_.setBounds(cRx, compArea.getY() + compRowH + 4,
-                                          compColW, compRowH);
-        } else {
-            // No dry audio yet: show L/R IR analysis in 2×2 grid per channel
-            int irColW = (area.getWidth() - 4) / 2;
-            int irRowH = (remaining - 4) / 2;
-
-            // Left: waveform + spectrogram
-            ir_waveform_L_.setBounds(area.getX(), area.getY(), irColW, irRowH);
-            ir_spectrogram_L_.setBounds(area.getX(), area.getY() + irRowH + 4,
-                                        irColW, irRowH);
-
-            // Right: waveform + spectrogram
-            int rX = area.getX() + irColW + 4;
-            ir_waveform_R_.setBounds(rX, area.getY(), irColW, irRowH);
-            ir_spectrogram_R_.setBounds(rX, area.getY() + irRowH + 4,
-                                        irColW, irRowH);
-
-            // Hide EDC/spectrum in stereo pre-auralization view
-            schroeder_L_.setVisible(false);
-            ir_spectrum_L_.setVisible(false);
-            schroeder_R_.setVisible(false);
-            ir_spectrum_R_.setVisible(false);
-        }
+        // Stereo: L|R side-by-side → 4 rows (waveform, EDC, spectrogram, spectrum)
+        totalH += 4 * (plotH + gap);
     } else {
-        // ════════════════════════════════════════════════════════════════
-        // MONO LAYOUT: original 2×2 grid with EDC + spectrum
-        // ════════════════════════════════════════════════════════════════
-        schroeder_L_.setVisible(true);
-        ir_spectrum_L_.setVisible(true);
+        // Mono: 4 full-width rows
+        totalH += 4 * (plotH + gap);
+    }
 
-        if (has_dry_) {
-            int irH = int(remaining * 0.55);
-            int compH = remaining - irH - 4;
-
-            auto irArea = area.removeFromTop(irH);
-            area.removeFromTop(4);
-            auto compArea = area;
-
-            // IR section: 2×2 grid
-            int irRowH = (irH - 4) / 2;
-            int irColW = (irArea.getWidth() - 4) / 2;
-            ir_waveform_L_.setBounds(irArea.getX(), irArea.getY(), irColW, irRowH);
-            schroeder_L_.setBounds(irArea.getX() + irColW + 4, irArea.getY(),
-                                   irColW, irRowH);
-            ir_spectrogram_L_.setBounds(irArea.getX(), irArea.getY() + irRowH + 4,
-                                        irColW, irRowH);
-            ir_spectrum_L_.setBounds(irArea.getX() + irColW + 4,
-                                     irArea.getY() + irRowH + 4, irColW, irRowH);
-
-            // Comparison: dry (left) vs convolved (right)
-            int compColW = (compArea.getWidth() - 4) / 2;
-            int compRowH = (compH - 4) / 2;
-            dry_waveform_.setBounds(compArea.getX(), compArea.getY(),
-                                    compColW, compRowH);
-            dry_spectrogram_.setBounds(compArea.getX(),
-                                       compArea.getY() + compRowH + 4,
-                                       compColW, compRowH);
-            conv_waveform_L_.setBounds(compArea.getX() + compColW + 4,
-                                       compArea.getY(), compColW, compRowH);
-            conv_spectrogram_L_.setBounds(compArea.getX() + compColW + 4,
-                                          compArea.getY() + compRowH + 4,
-                                          compColW, compRowH);
+    if (has_dry_) {
+        totalH += plotH + gap;  // dry waveform
+        totalH += plotH + gap;  // dry spectrogram
+        if (is_stereo_) {
+            // Conv L|R side-by-side → 2 rows (waveform, spectrogram)
+            totalH += 2 * (plotH + gap);
         } else {
-            // No dry audio: IR fills space as 2×2
-            int irRowH = (remaining - 4) / 2;
-            int irColW = (area.getWidth() - 4) / 2;
-            ir_waveform_L_.setBounds(area.getX(), area.getY(), irColW, irRowH);
-            schroeder_L_.setBounds(area.getX() + irColW + 4, area.getY(),
-                                   irColW, irRowH);
-            ir_spectrogram_L_.setBounds(area.getX(), area.getY() + irRowH + 4,
-                                        irColW, irRowH);
-            ir_spectrum_L_.setBounds(area.getX() + irColW + 4,
-                                     area.getY() + irRowH + 4, irColW, irRowH);
+            totalH += 2 * (plotH + gap);  // conv waveform + spectrogram
+        }
+    }
+
+    totalH += 32 + gap + pad; // transport bar
+
+    // Anti-recursion: adjust height for Viewport scrolling
+    if (getHeight() != totalH) {
+        setSize(W, totalH);
+        return;
+    }
+
+    int y = pad;
+
+    // ── Title + metrics summary ──
+    title_label_.setBounds(pad, y, 170, 22);
+    metrics_label_.setBounds(pad + 178, y, usableW - 178, 22);
+    y += 22 + gap;
+
+    // ── Button row ──
+    int bx = pad;
+    auralize_btn_.setBounds(bx, y, 90, ctrlH); bx += 94;
+    test_signal_btn_.setBounds(bx, y, 90, ctrlH); bx += 94;
+    play_dry_btn_.setBounds(bx, y, 70, ctrlH); bx += 74;
+    play_conv_btn_.setBounds(bx, y, 100, ctrlH); bx += 104;
+    stop_btn_.setBounds(bx, y, 44, ctrlH); bx += 48;
+    loudness_mode_btn_.setBounds(bx, y, 130, ctrlH); bx += 134;
+    save_all_btn_.setBounds(bx, y, 80, ctrlH);
+    y += ctrlH + gap;
+
+    // ── LUFS ──
+    lufs_label_.setBounds(pad, y, usableW, 16);
+    y += 16 + gap;
+
+    // ── ISO 3382 metrics table ──
+    metrics_table_.setBounds(pad, y, usableW, metricsH);
+    y += metricsH + gap;
+
+    // ── Helpers ──
+    // Full-width plot
+    auto placeFull = [&](Component& c) {
+        c.setBounds(pad, y, usableW, plotH);
+        y += plotH + gap;
+    };
+
+    // Side-by-side pair (L on left, R on right)
+    int halfW = (usableW - colGap) / 2;
+    auto placePair = [&](Component& L, Component& R) {
+        L.setBounds(pad, y, halfW, plotH);
+        R.setBounds(pad + halfW + colGap, y, halfW, plotH);
+        y += plotH + gap;
+    };
+
+    // ── IR Analysis ──
+    schroeder_L_.setVisible(true);
+    ir_spectrum_L_.setVisible(true);
+
+    if (is_stereo_) {
+        schroeder_R_.setVisible(true);
+        ir_spectrum_R_.setVisible(true);
+
+        // L | R side-by-side for each plot type
+        placePair(ir_waveform_L_, ir_waveform_R_);
+        placePair(schroeder_L_, schroeder_R_);
+        placePair(ir_spectrogram_L_, ir_spectrogram_R_);
+        placePair(ir_spectrum_L_, ir_spectrum_R_);
+    } else {
+        // Mono: full-width
+        placeFull(ir_waveform_L_);
+        placeFull(schroeder_L_);
+        placeFull(ir_spectrogram_L_);
+        placeFull(ir_spectrum_L_);
+    }
+
+    // ── Comparison section (after auralization) ──
+    if (has_dry_) {
+        // Dry audio is always full-width (single signal)
+        placeFull(dry_waveform_);
+        placeFull(dry_spectrogram_);
+
+        if (is_stereo_) {
+            // Convolved L | R side-by-side
+            placePair(conv_waveform_L_, conv_waveform_R_);
+            placePair(conv_spectrogram_L_, conv_spectrogram_R_);
+        } else {
+            placeFull(conv_waveform_L_);
+            placeFull(conv_spectrogram_L_);
+        }
+    }
+
+    // ── Transport bar ──
+    transport_bar_->setBounds(pad, y, usableW, 32);
+    y += 32 + gap;
+
+    // ── Position popout buttons on each visible plot ──
+    for (auto& pe : popout_entries_) {
+        auto* btn = popout_btns_[pe.btn_idx];
+        if (pe.plot->isVisible() && pe.plot->getWidth() > 0) {
+            auto b = pe.plot->getBounds();
+            // Top-right corner, inset slightly
+            btn->setBounds(b.getRight() - 36, b.getY() + 2, 32, 16);
+            btn->setVisible(true);
+            btn->toFront(false);
+        } else {
+            btn->setVisible(false);
         }
     }
 }
@@ -1935,12 +2229,17 @@ void ResultsContent::resized() {
 ////////////////////////////////////////////////////////////////////////////////
 
 ResultsWindow::ResultsWindow(const std::vector<std::string>& paths,
-                             double sampleRate)
-        : DocumentWindow("Results",
+                             double sampleRate,
+                             const std::string& title)
+        : DocumentWindow(String(title),
                           wv_theme::bg_dark,
                           DocumentWindow::allButtons) {
-    content_.setSize(1100, 980);
-    setContentNonOwned(&content_, true);
+    // Set up scrollable viewport
+    viewport_.setViewedComponent(&content_, false);  // don't take ownership
+    viewport_.setScrollBarsShown(true, false);       // vertical only
+    viewport_.setScrollBarThickness(10);
+
+    setContentNonOwned(&viewport_, false);
     centreWithSize(1100, 980);
     setResizable(true, true);
     setResizeLimits(800, 600, 10000, 10000);
@@ -1967,6 +2266,17 @@ ResultsWindow::ResultsWindow(const std::vector<std::string>& paths,
 #endif
 
     content_.loadFiles(paths, sampleRate);
+}
+
+void ResultsWindow::resized() {
+    DocumentWindow::resized();
+    if (auto* cc = getContentComponent()) {
+        auto area = cc->getLocalBounds();
+        viewport_.setBounds(area);
+        int contentW = area.getWidth() - viewport_.getScrollBarThickness();
+        if (contentW > 0 && content_.getWidth() != contentW)
+            content_.setSize(contentW, content_.getHeight());
+    }
 }
 
 void ResultsWindow::closeButtonPressed() {

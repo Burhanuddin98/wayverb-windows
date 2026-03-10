@@ -98,6 +98,24 @@ std::vector<std::string> compute_all_file_names(const persistent& persistent,
     return ret;
 }
 
+std::vector<measurement_group> compute_grouped_file_names(
+        const persistent& persistent, const output& output) {
+    std::vector<measurement_group> ret;
+    for (const auto& source : *persistent.sources()) {
+        for (const auto& receiver : *persistent.receivers()) {
+            measurement_group g;
+            g.source_name = source.item()->get_name();
+            g.receiver_name = receiver.item()->get_name();
+            for (const auto& capsule : *receiver.item()->capsules()) {
+                g.capsule_paths.emplace_back(compute_output_path(
+                        *source, *receiver, *capsule, output));
+            }
+            ret.push_back(std::move(g));
+        }
+    }
+    return ret;
+}
+
 }  // namespace model
 }  // namespace combined
 }  // namespace wayverb

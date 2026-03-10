@@ -165,7 +165,7 @@ public:
     //  Preset data.
 
     using material_presets_t =
-            decltype(wayverb::combined::model::presets::materials);
+            std::vector<wayverb::combined::model::material>;
     material_presets_t material_presets;
 
     using capsule_presets_t =

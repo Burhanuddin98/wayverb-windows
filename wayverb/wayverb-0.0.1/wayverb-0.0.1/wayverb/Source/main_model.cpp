@@ -1,5 +1,8 @@
 #include "main_model.h"
 
+#include <algorithm>
+#include <numeric>
+
 #include "UtilityComponents/async_work_queue.h"
 
 #include "combined/model/hrtf.h"
@@ -908,6 +911,22 @@ main_model::main_model(const std::string& name)
         , capsule_presets{wayverb::combined::model::presets::capsules}
         , currently_open_file_{name}
         , pimpl_{std::make_unique<impl>()} {
+    // Sort material presets alphabetically by name
+    {
+        // Build sorted index (material's copy-assign notifies observers,
+        // so we rebuild the vector from scratch instead of sorting in-place).
+        std::vector<size_t> idx(material_presets.size());
+        std::iota(idx.begin(), idx.end(), 0);
+        std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) {
+            return material_presets[a].get_name() < material_presets[b].get_name();
+        });
+        material_presets_t sorted;
+        sorted.reserve(idx.size());
+        for (auto i : idx)
+            sorted.emplace_back(material_presets[i].get_name(),
+                                material_presets[i].get_surface());
+        material_presets = std::move(sorted);
+    }
     diag_log() << "[main_model] material_presets count: "
                << material_presets.size() << "\n";
     if (!material_presets.empty()) {

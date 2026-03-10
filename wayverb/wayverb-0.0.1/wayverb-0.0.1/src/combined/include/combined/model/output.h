@@ -79,6 +79,17 @@ std::string compute_output_path(const source& source,
 std::vector<std::string> compute_all_file_names(const persistent& persistent,
                                                 const output& output);
 
+/// One result group per (source, receiver) pair.
+/// capsule_paths contains one file per capsule (mono=1, stereo/binaural=2).
+struct measurement_group {
+    std::string source_name;
+    std::string receiver_name;
+    std::vector<std::string> capsule_paths;
+};
+
+std::vector<measurement_group> compute_grouped_file_names(
+        const persistent& persistent, const output& output);
+
 }  // namespace model
 }  // namespace combined
 }  // namespace wayverb

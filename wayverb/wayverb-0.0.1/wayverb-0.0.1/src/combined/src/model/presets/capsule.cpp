@@ -33,10 +33,10 @@ const std::vector<capsule> capsules{
         capsule{"blumlein pair",
                 {wayverb::combined::model::capsule{
                          "left bi",
-                         microphone{core::orientation{{1, 0, 1}}, 1}},
+                         microphone{core::orientation{{-1, 0, 1}}, 1}},
                  wayverb::combined::model::capsule{
                          "right bi",
-                         microphone{core::orientation{{-1, 0, 1}}, 1}}}},
+                         microphone{core::orientation{{1, 0, 1}}, 1}}}},
 
 };
 

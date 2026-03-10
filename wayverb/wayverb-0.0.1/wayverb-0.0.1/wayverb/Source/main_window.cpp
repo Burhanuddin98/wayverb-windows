@@ -38,14 +38,20 @@ main_window::main_window(ApplicationCommandTarget& next,
         })}
         , finished_connection_{model_.connect_finished([this] {
             wayverb_application::get_command_manager().commandStatusChanged();
-            // Open results window with rendered files
-            const auto fnames =
-                    wayverb::combined::model::compute_all_file_names(
+            // Open one results window per (source, receiver) measurement
+            const auto groups =
+                    wayverb::combined::model::compute_grouped_file_names(
                             model_.project.persistent, model_.output);
-            if (!fnames.empty()) {
-                const auto sr = wayverb::combined::model::get_sample_rate(
-                        model_.output.get_sample_rate());
-                results_window_ = std::make_unique<ResultsWindow>(fnames, sr);
+            const auto sr = wayverb::combined::model::get_sample_rate(
+                    model_.output.get_sample_rate());
+            results_windows_.clear();
+            for (const auto& g : groups) {
+                if (g.capsule_paths.empty()) continue;
+                auto title = "Results: " + g.source_name
+                           + " → " + g.receiver_name;
+                results_windows_.push_back(
+                        std::make_unique<ResultsWindow>(
+                                g.capsule_paths, sr, title));
             }
         })} {
     content_component_.setSize(800, 600);

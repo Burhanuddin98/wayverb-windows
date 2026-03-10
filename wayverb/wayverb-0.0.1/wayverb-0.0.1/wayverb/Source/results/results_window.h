@@ -311,6 +311,18 @@ private:
     TextButton play_conv_btn_{"Play Convolved"};
     TextButton stop_btn_{"Stop"};
     TextButton loudness_mode_btn_{"Physical Loudness"};
+    TextButton save_all_btn_{"Save All..."};
+    TextButton test_signal_btn_{"Test Signal"};
+
+    void saveAllToFolder();
+    void convolveWithFile(const File& audioFile);
+    void openPopout(Component* source);
+
+    // ── Popout plot buttons (overlaid on each plot's corner) ──
+    OwnedArray<TextButton> popout_btns_;
+    struct PopEntry { Component* plot; int btn_idx; };
+    std::vector<PopEntry> popout_entries_;
+    OwnedArray<DocumentWindow> popout_windows_;
 
     // ── Playback ──
     DefaultAudioDeviceManager device_manager_;
@@ -323,8 +335,11 @@ private:
 // ── Top-level results window ────────────────────────────────────────────────
 class ResultsWindow : public DocumentWindow {
 public:
-    ResultsWindow(const std::vector<std::string>& paths, double sampleRate);
+    ResultsWindow(const std::vector<std::string>& paths, double sampleRate,
+                  const std::string& title = "Results");
     void closeButtonPressed() override;
+    void resized() override;
 private:
+    Viewport viewport_;
     ResultsContent content_;
 };
