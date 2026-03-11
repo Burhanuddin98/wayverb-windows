@@ -146,21 +146,24 @@ public:
             const std::atomic_bool& keep_going) const {
         //  RAYTRACER  /////////////////////////////////////////////////////////
 
-        const auto rays_to_visualise = std::min(size_t{32}, raytracer_.rays);
+        //  Local copy avoids mutating the shared member (thread safety).
+        auto raytracer_params = raytracer_;
+
+        const auto rays_to_visualise = std::min(size_t{32}, raytracer_params.rays);
 
         fprintf(stderr, "[engine] run: rays=%zu img_src_order=%zu room_vol=%.1f\n",
-                raytracer_.rays, raytracer_.maximum_image_source_order,
+                raytracer_params.rays, raytracer_params.maximum_image_source_order,
                 room_volume_);
         fflush(stderr);
 
         // Cap ray count to prevent GPU memory exhaustion on 6GB cards.
         // Each ray needs ~56 bytes of buffer; 100K rays ≈ 5.6 MB which is safe.
         constexpr size_t MAX_RAYS = 100000;
-        if (raytracer_.rays > MAX_RAYS) {
+        if (raytracer_params.rays > MAX_RAYS) {
             fprintf(stderr, "[engine] Capping rays %zu -> %zu (VRAM limit)\n",
-                    raytracer_.rays, MAX_RAYS);
+                    raytracer_params.rays, MAX_RAYS);
             fflush(stderr);
-            raytracer_.rays = MAX_RAYS;
+            raytracer_params.rays = MAX_RAYS;
         }
 
         engine_state_changed_(state::starting_raytracer, 1.0);
@@ -173,7 +176,7 @@ public:
                 source_,
                 receiver_,
                 environment_,
-                raytracer_,
+                raytracer_params,
                 rays_to_visualise,
                 keep_going,
                 [&](auto step, auto total_steps) {
@@ -335,7 +338,7 @@ private:
     glm::vec3 source_;
     glm::vec3 receiver_;
     core::environment environment_;
-    mutable raytracer::simulation_parameters raytracer_;
+    raytracer::simulation_parameters raytracer_;
     std::unique_ptr<waveguide_base> waveguide_;
     model::directivity_pattern source_directivity_;
     core::orientation source_orientation_;

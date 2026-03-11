@@ -15,6 +15,7 @@
 #include "audio_file/audio_file.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <complex>
 #include <cstdio>
@@ -135,7 +136,7 @@ void normalize_distance(Vec& v, double sample_rate, float distance) {
     const float ref = (direct_peak > global_peak * 0.05f)
             ? direct_peak : global_peak;
 
-    if (ref > 1e-10f) {
+    if (ref > 1e-6f) {
         const auto scale = target / ref;
         for (auto& s : v) {
             s *= scale;
@@ -186,12 +187,8 @@ void align_peaks(VecA& a, VecB& b) {
 
     const auto shift = [](auto& v, size_t amount) {
         if (amount == 0 || amount >= v.size()) return;
-        for (size_t i = v.size() - 1; i >= amount; --i) {
-            v[i] = v[i - amount];
-        }
-        for (size_t i = 0; i < amount; ++i) {
-            v[i] = 0.0f;
-        }
+        std::copy_backward(v.begin(), v.end() - amount, v.end());
+        std::fill(v.begin(), v.begin() + amount, 0.0f);
     };
 
     if (onset_a < onset_b) {
@@ -388,6 +385,8 @@ auto postprocess(const combined_results<Histogram>& input,
     //  frequency and an audible "hollow" coloration.
     align_peaks(waveguide_processed, raytracer_processed);
 
+    //  Safe: input.waveguide guaranteed non-empty (empty case returned above).
+    assert(!input.waveguide.empty());
     const auto cutoff = *std::max_element(make_iterator(begin(input.waveguide)),
                                           make_iterator(end(input.waveguide))) /
                         output_sample_rate;
@@ -574,7 +573,7 @@ auto postprocess(const combined_results<Histogram>& input,
         for (size_t i = fade_start; i < filtered.size(); ++i) {
             const auto t = static_cast<float>(i - fade_start) /
                            static_cast<float>(fade_len);
-            filtered[i] *= 0.5f * (1.0f + std::cos(3.14159265f * t));
+            filtered[i] *= 0.5f * (1.0f + std::cos(static_cast<float>(M_PI) * t));
         }
     }
 

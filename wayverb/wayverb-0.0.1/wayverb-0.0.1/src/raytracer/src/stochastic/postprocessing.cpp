@@ -348,9 +348,10 @@ util::aligned::vector<float> postprocessing(const energy_histogram& histogram,
                      const double f = static_cast<double>(freq_raw);
                      const double f_hz = f * sr;
 
-                     //  Lower floor to 2 Hz (was 10 Hz — suppressed large
-                     //  room modes).
-                     if (f_hz < 2.0 || f >= 0.499) {
+                     //  Floor: max(2 Hz, spectral resolution of this FFT).
+                     //  Below the spectral resolution, content aliases.
+                     const double f_min = std::max(2.0, sr / fft_len);
+                     if (f_hz < f_min || f >= 0.499) {
                          return {0.0f, 0.0f};
                      }
 

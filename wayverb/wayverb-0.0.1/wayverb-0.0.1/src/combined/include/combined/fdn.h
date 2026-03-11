@@ -203,23 +203,20 @@ inline std::vector<float> generate_fdn_tail(
     if (num_samples == 0 || initial_rms < 1e-12f) return {};
 
     // Scale delay lengths for the actual sample rate.
-    std::array<int, kNumLines> delays{};
+    std::array<size_t, kNumLines> delays{};
     for (size_t i = 0; i < kNumLines; ++i) {
-        delays[i] = std::max(1, static_cast<int>(
+        delays[i] = std::max(size_t{1}, static_cast<size_t>(
                 kBaseDelays[i] * sample_rate / 44100.0));
     }
-
-    // Maximum delay for buffer sizing.
-    const int max_delay = *std::max_element(delays.begin(), delays.end());
 
     // Per-line circular delay buffers.
     std::vector<std::vector<float>> buffers(kNumLines);
     for (size_t i = 0; i < kNumLines; ++i) {
-        buffers[i].resize(static_cast<size_t>(delays[i]), 0.0f);
+        buffers[i].resize(delays[i], 0.0f);
     }
 
     // Write positions (circular).
-    std::array<int, kNumLines> write_pos{};
+    std::array<size_t, kNumLines> write_pos{};
 
     // Per-line feedback gains: g = 10^(-3 * delay / (RT60 * sr))
     // This ensures each delay line decays to -60 dB in RT60 seconds.
@@ -227,7 +224,8 @@ inline std::vector<float> generate_fdn_tail(
     for (size_t i = 0; i < kNumLines; ++i) {
         const double rt = std::max(static_cast<double>(band_rt60[i]), 0.1);
         gains[i] = static_cast<float>(
-                std::pow(10.0, -3.0 * delays[i] / (rt * sample_rate)));
+                std::pow(10.0, -3.0 * static_cast<double>(delays[i]) /
+                                (rt * sample_rate)));
     }
 
     // Hadamard feedback matrix.
@@ -245,8 +243,7 @@ inline std::vector<float> generate_fdn_tail(
 
     for (size_t n = 0; n < excite_len; ++n) {
         for (size_t i = 0; i < kNumLines; ++i) {
-            const auto idx = static_cast<size_t>(write_pos[i]);
-            buffers[i][idx] += excite_scale * noise(rng);
+            buffers[i][write_pos[i]] += excite_scale * noise(rng);
             write_pos[i] = (write_pos[i] + 1) % delays[i];
         }
     }
@@ -260,8 +257,7 @@ inline std::vector<float> generate_fdn_tail(
     for (size_t n = 0; n < num_samples; ++n) {
         // Read from each delay line.
         for (size_t i = 0; i < kNumLines; ++i) {
-            const auto idx = static_cast<size_t>(write_pos[i]);
-            read_vals[i] = buffers[i][idx];
+            read_vals[i] = buffers[i][write_pos[i]];
         }
 
         // Mix output: sum all lines (equal contribution).
@@ -283,8 +279,7 @@ inline std::vector<float> generate_fdn_tail(
 
         // Write feedback into delay lines.
         for (size_t i = 0; i < kNumLines; ++i) {
-            const auto idx = static_cast<size_t>(write_pos[i]);
-            buffers[i][idx] = feedback[i];
+            buffers[i][write_pos[i]] = feedback[i];
             write_pos[i] = (write_pos[i] + 1) % delays[i];
         }
     }

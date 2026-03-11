@@ -10,6 +10,7 @@
 #include "utilities/range.h"
 
 #include <cstdio>
+#include <stdexcept>
 
 namespace frequency_domain {
 
@@ -62,10 +63,12 @@ auto multiband_filter(It b,
     constexpr size_t MAX_FFT_BINS = 1 << 26;  // 67108864
     auto bins = best_fft_length(std::distance(b, e)) << 2;
     if (bins > MAX_FFT_BINS) {
-        fprintf(stderr, "[multiband_filter] WARNING: capping FFT bins %zu -> %zu\n",
-                bins, MAX_FFT_BINS);
+        fprintf(stderr, "[multiband_filter] ERROR: IR too long (%td samples, "
+                "requires %zu FFT bins, max %zu). Reduce simulation time.\n",
+                std::distance(b, e), bins, MAX_FFT_BINS);
         fflush(stderr);
-        bins = MAX_FFT_BINS;
+        throw std::runtime_error(
+                "IR exceeds maximum processable length (64M FFT bins)");
     }
     filter filt{bins};
 
