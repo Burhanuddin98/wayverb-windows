@@ -164,10 +164,10 @@ public:
                         "Band Centres (Hz)", 25);
         auto absorption =
                 std::make_unique<property_component_adapter<bands_component>>(
-                        "Absorption", 100, 0.01, 1.0, 0.01);
+                        "Absorption", 150, 0.01, 1.0, 0.01);
         auto scattering =
                 std::make_unique<property_component_adapter<bands_component>>(
-                        "Scattering", 100, 0.0, 1.0, 0.01);
+                        "Scattering", 150, 0.0, 1.0, 0.01);
 
         const auto update_from_material =
                 [ this, a = &absorption->content, s = &scattering->content ](
@@ -203,13 +203,13 @@ public:
         preset_label_.setColour(Label::textColourId, Colours::lightgrey);
         preset_label_.setText("Material Presets", dontSendNotification);
 
-        setSize(680, sliders_panel_.getTotalContentHeight());
+        setSize(1100, sliders_panel_.getTotalContentHeight());
     }
 
     void resized() override {
         auto bounds = getLocalBounds();
-        // Right column: preset list (200px wide)
-        auto presetArea = bounds.removeFromRight(200);
+        // Right column: preset list (260px wide)
+        auto presetArea = bounds.removeFromRight(260);
         auto labelArea = presetArea.removeFromTop(20);
         preset_label_.setBounds(labelArea);
         preset_list_.setBounds(presetArea);
