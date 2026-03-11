@@ -221,6 +221,19 @@ BandMetrics computeBandMetrics(const std::vector<float>& sig, double sr) {
     if (sig.empty()) return bm;
 
     const size_t N = sig.size();
+
+    // ── Find IR onset (ISO 3382: metrics measured from direct-sound arrival) ──
+    // Use first sample exceeding -20 dB below the peak.
+    float peak_abs = 0.0f;
+    for (auto& s : sig) peak_abs = std::max(peak_abs, std::abs(s));
+    if (peak_abs <= 0.0f) return bm;
+
+    size_t onset_idx = 0;
+    const float onset_thresh = peak_abs * 0.1f;  // -20 dB relative to peak
+    for (size_t i = 0; i < N; ++i) {
+        if (std::abs(sig[i]) >= onset_thresh) { onset_idx = i; break; }
+    }
+
     std::vector<double> energy(N);
     double total = 0;
     for (size_t i = 0; i < N; ++i) {
@@ -229,17 +242,19 @@ BandMetrics computeBandMetrics(const std::vector<float>& sig, double sr) {
     }
     if (total <= 0) return bm;
 
-    // Schroeder backward integration
+    // Schroeder backward integration (full IR)
     std::vector<double> edc(N);
     edc.back() = energy.back();
     for (int i = int(N) - 2; i >= 0; --i)
         edc[i] = edc[i + 1] + energy[i];
-    double peak = edc[0];
+    // Reference point: EDC at onset (≈ edc[0] when pre-delay is silent)
+    double edc_ref = edc[onset_idx];
+    if (edc_ref <= 0) return bm;
 
-    // RT60 (T20: -5 to -25 dB, ×3)
+    // RT60 (T20: -5 to -25 dB, ×3) and T30 — search from onset
     int idx_5 = -1, idx_25 = -1, idx_35 = -1, idx_10 = -1;
-    for (size_t i = 0; i < N; ++i) {
-        double db = 10.0 * std::log10(std::max(edc[i] / peak, 1e-15));
+    for (size_t i = onset_idx; i < N; ++i) {
+        double db = 10.0 * std::log10(std::max(edc[i] / edc_ref, 1e-15));
         if (idx_5  < 0 && db <= -5.0)  idx_5  = int(i);
         if (idx_10 < 0 && db <= -10.0) idx_10 = int(i);
         if (idx_25 < 0 && db <= -25.0) idx_25 = int(i);
@@ -252,41 +267,46 @@ BandMetrics computeBandMetrics(const std::vector<float>& sig, double sr) {
     if (idx_5 >= 0 && idx_35 > idx_5)
         bm.t30 = double(idx_35 - idx_5) / sr * 2.0;
 
-    // EDT (0 to -10 dB, ×6)
+    // EDT (0 to -10 dB from onset, ×6)
     if (idx_10 > 0)
-        bm.edt = double(idx_10) / sr * 6.0;
+        bm.edt = double(idx_10 - int(onset_idx)) / sr * 6.0;
 
-    // C80
+    // C80: energy from onset to onset+80 ms vs rest
     int n80 = int(0.080 * sr);
-    if (n80 > 0 && n80 < int(N)) {
+    size_t end80 = onset_idx + n80;
+    if (end80 < N) {
         double early = 0, late = 0;
-        for (int i = 0; i < n80; ++i) early += energy[i];
-        for (size_t i = n80; i < N; ++i) late += energy[i];
+        for (size_t i = onset_idx; i < end80; ++i) early += energy[i];
+        for (size_t i = end80;     i < N;     ++i) late  += energy[i];
         if (late > 0) bm.c80 = 10.0 * std::log10(early / late);
     }
 
-    // C50
+    // C50: energy from onset to onset+50 ms vs rest
     int n50 = int(0.050 * sr);
-    if (n50 > 0 && n50 < int(N)) {
+    size_t end50 = onset_idx + n50;
+    if (end50 < N) {
         double early = 0, late = 0;
-        for (int i = 0; i < n50; ++i) early += energy[i];
-        for (size_t i = n50; i < N; ++i) late += energy[i];
+        for (size_t i = onset_idx; i < end50; ++i) early += energy[i];
+        for (size_t i = end50;     i < N;     ++i) late  += energy[i];
         if (late > 0) bm.c50 = 10.0 * std::log10(early / late);
     }
 
     // D50 (%)
-    if (n50 > 0 && n50 < int(N)) {
+    if (end50 < N) {
         double early = 0;
-        for (int i = 0; i < n50; ++i) early += energy[i];
+        for (size_t i = onset_idx; i < end50; ++i) early += energy[i];
         bm.d50 = early / total * 100.0;
     }
 
-    // Ts (Centre Time, ms) = ∫t·h²(t)dt / ∫h²(t)dt
+    // Ts (Centre Time, ms) = ∫t·h²(t)dt / ∫h²(t)dt — t measured from onset
     {
-        double num = 0;
-        for (size_t i = 0; i < N; ++i)
-            num += (double(i) / sr) * energy[i];
-        bm.ts = (num / total) * 1000.0;  // convert to ms
+        double num = 0, denom = 0;
+        for (size_t i = onset_idx; i < N; ++i) {
+            double t = double(i - onset_idx) / sr;
+            num   += t * energy[i];
+            denom += energy[i];
+        }
+        if (denom > 0) bm.ts = (num / denom) * 1000.0;
     }
 
     return bm;

@@ -63,13 +63,19 @@ public:
     void releaseResources() override {}
 
     void getNextAudioBlock(const AudioSourceChannelInfo& info) override {
-        const int remaining = buffer_.getNumSamples() - position_;
+        // Guard against degenerate buffer
+        if (buffer_.getNumChannels() <= 0 || buffer_.getNumSamples() <= 0) {
+            info.buffer->clear(info.startSample, info.numSamples);
+            return;
+        }
+        const int remaining = jmax(0, buffer_.getNumSamples() - (int)position_);
         const int toCopy = jmin(info.numSamples, remaining);
         if (toCopy > 0) {
+            const int numSrcCh = buffer_.getNumChannels();
             for (int ch = 0; ch < info.buffer->getNumChannels(); ++ch) {
-                const int srcCh = jmin(ch, buffer_.getNumChannels() - 1);
+                const int srcCh = ch < numSrcCh ? ch : numSrcCh - 1;
                 info.buffer->copyFrom(ch, info.startSample,
-                                      buffer_, srcCh, position_, toCopy);
+                                      buffer_, srcCh, (int)position_, toCopy);
             }
         }
         if (toCopy < info.numSamples)
@@ -80,13 +86,15 @@ public:
 
     int64 getTotalLength() const override { return buffer_.getNumSamples(); }
     int64 getNextReadPosition() const override { return position_; }
-    void setNextReadPosition(int64 p) override { position_ = int(p); }
+    void setNextReadPosition(int64 p) override {
+        position_ = (int64)jlimit((int64)0, (int64)buffer_.getNumSamples(), p);
+    }
     bool isLooping() const override { return false; }
 
 private:
     AudioBuffer<float> buffer_;
     double sample_rate_;
-    int position_ = 0;
+    int64 position_ = 0;
 };
 
 // ── Zoom/pan state for interactive plots ────────────────────────────────────
