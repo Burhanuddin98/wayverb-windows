@@ -58,28 +58,128 @@ make_hadamard_16() {
     return H;
 }
 
-/// Per-band RT60 estimate from Sabine formula.
+/// Per-band RT60 estimate from Sabine formula (fallback).
 /// Returns approximate RT60 in seconds for each of the 16 half-octave
 /// bands.  Uses the room volume and a rough frequency-dependent
 /// absorption coefficient (higher frequencies decay faster).
 inline std::array<float, kNumLines>
 estimate_band_rt60(double room_volume, double speed_of_sound) {
     std::array<float, kNumLines> rt60{};
-    // Half-octave centre frequencies from ~44 Hz to ~16 kHz
-    // (matching the 16-band simulation: 20 Hz to 20 kHz range)
     constexpr double f0 = 44.0;
     for (size_t b = 0; b < kNumLines; ++b) {
-        const double freq = f0 * std::pow(2.0, b * 0.5);
-        // Approximate absorption: increases with frequency.
-        // alpha ~ 0.05 at 44 Hz, ~0.35 at 16 kHz  (typical furnished room)
         const double alpha = 0.05 + 0.30 * (static_cast<double>(b) /
                                               (kNumLines - 1));
-        // Sabine: RT60 = 0.161 V / (S alpha)
-        // Approximate total surface area S ~ 6 V^(2/3) for a cube.
         const double S = 6.0 * std::pow(room_volume, 2.0 / 3.0);
         rt60[b] = static_cast<float>(
                 0.161 * room_volume / std::max(S * alpha, 0.1));
     }
+    return rt60;
+}
+
+/// Measure per-band RT60 from the actual signal tail.
+///
+/// Divides the signal into 16 frequency bands via a simple 2nd-order
+/// bandpass cascade, measures the energy decay in the last portion of
+/// each band, and extrapolates to -60 dB.  Falls back to Sabine
+/// estimate for bands where measurement fails (too little energy).
+template <typename Vec>
+inline std::array<float, kNumLines>
+measure_band_rt60(const Vec& signal, double sample_rate,
+                  double room_volume, double speed_of_sound) {
+    // Start with Sabine as baseline.
+    auto rt60 = estimate_band_rt60(room_volume, speed_of_sound);
+
+    if (signal.size() < 8192) return rt60;
+
+    // Band centre frequencies (half-octave spacing from ~44 Hz to ~16 kHz).
+    constexpr double f0 = 44.0;
+    std::array<double, kNumLines> fc{};
+    for (size_t b = 0; b < kNumLines; ++b) {
+        fc[b] = f0 * std::pow(2.0, b * 0.5);
+    }
+
+    // Use the last 50% of the signal for decay measurement.
+    const size_t measure_start = signal.size() / 2;
+    const size_t measure_len = signal.size() - measure_start;
+
+    // Window size for energy measurement (4096 samples ≈ 93ms at 44.1kHz).
+    constexpr size_t win = 4096;
+    const size_t nw = measure_len / win;
+    if (nw < 3) return rt60;
+
+    for (size_t b = 0; b < kNumLines; ++b) {
+        // 2nd-order IIR bandpass filter (biquad).
+        const double w0 = 2.0 * M_PI * fc[b] / sample_rate;
+        if (w0 >= M_PI * 0.95) continue;  // Too close to Nyquist.
+
+        const double Q = 1.4;  // Moderate selectivity.
+        const double alpha_bp = std::sin(w0) / (2.0 * Q);
+        const double b0 =  alpha_bp;
+        const double b1 =  0.0;
+        const double b2 = -alpha_bp;
+        const double a0 =  1.0 + alpha_bp;
+        const double a1 = -2.0 * std::cos(w0);
+        const double a2 =  1.0 - alpha_bp;
+
+        // Filter the measurement region and compute RMS per window.
+        double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+        std::vector<float> wrms(nw, 0.0f);
+        for (size_t w = 0; w < nw; ++w) {
+            double sum_sq = 0.0;
+            for (size_t i = 0; i < win; ++i) {
+                const size_t idx = measure_start + w * win + i;
+                const double x = static_cast<double>(signal[idx]);
+                const double y = (b0 * x + b1 * x1 + b2 * x2
+                                  - a1 * y1 - a2 * y2) / a0;
+                x2 = x1; x1 = x;
+                y2 = y1; y1 = y;
+                sum_sq += y * y;
+            }
+            wrms[w] = static_cast<float>(std::sqrt(sum_sq / win));
+        }
+
+        // Linear regression on log-RMS to estimate decay rate.
+        // RT60 = -60 dB / (decay_rate_dB_per_sec).
+        int valid_count = 0;
+        double sx = 0, sy = 0, sxx = 0, sxy = 0;
+        for (size_t w = 0; w < nw; ++w) {
+            if (wrms[w] < 1e-12f) continue;
+            const double t = static_cast<double>(w * win) / sample_rate;
+            const double log_rms = 20.0 * std::log10(
+                    static_cast<double>(wrms[w]));
+            sx += t;
+            sy += log_rms;
+            sxx += t * t;
+            sxy += t * log_rms;
+            ++valid_count;
+        }
+
+        if (valid_count < 3) continue;
+
+        const double n = static_cast<double>(valid_count);
+        const double denom = n * sxx - sx * sx;
+        if (std::abs(denom) < 1e-20) continue;
+
+        const double slope = (n * sxy - sx * sy) / denom;  // dB/s
+
+        // Decay slope must be negative (signal decaying).
+        if (slope >= -0.1) continue;
+
+        const double measured_rt60 = -60.0 / slope;
+
+        // Sanity check: 0.1s to 30s.
+        if (measured_rt60 >= 0.1 && measured_rt60 <= 30.0) {
+            rt60[b] = static_cast<float>(measured_rt60);
+        }
+    }
+
+    fprintf(stderr, "[FDN] measured RT60: ");
+    for (size_t b = 0; b < kNumLines; ++b) {
+        fprintf(stderr, "%.2f ", rt60[b]);
+    }
+    fprintf(stderr, "\n");
+    fflush(stderr);
+
     return rt60;
 }
 
@@ -237,8 +337,10 @@ inline void extend_with_fdn(Vec& signal,
         return;
     }
 
-    // Estimate per-band RT60.
-    const auto band_rt60 = estimate_band_rt60(room_volume, speed_of_sound);
+    // Measure per-band RT60 from the actual signal decay.
+    // Falls back to Sabine estimates for bands where measurement fails.
+    const auto band_rt60 = measure_band_rt60(
+            signal, sample_rate, room_volume, speed_of_sound);
 
     // Generate FDN tail.
     const auto fdn_tail = generate_fdn_tail(

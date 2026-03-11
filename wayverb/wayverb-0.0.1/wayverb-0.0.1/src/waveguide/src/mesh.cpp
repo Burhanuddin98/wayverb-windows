@@ -12,6 +12,7 @@
 
 #include "utilities/popcount.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <iostream>
 
@@ -156,9 +157,22 @@ mesh compute_mesh(
                     end(voxelised.get_scene_data().get_surfaces()),
                     [&](const auto& surface) -> coefficients_canonical {
                         try {
+                            //  Clamp absorption to a minimum of 0.05 per band.
+                            //  Very low absorption (e.g. glass, α ≈ 0.018)
+                            //  produces reflectance ≈ 0.991 → IIR filter poles
+                            //  at |z| ≈ 0.999, which accumulate numerical error
+                            //  over thousands of time steps and diverge to inf.
+                            //  A 5% floor is standard practice in commercial
+                            //  room-acoustics software (Odeon, CATT-Acoustic).
+                            constexpr float min_absorption = 0.05f;
+                            core::bands_type clamped_abs;
+                            for (int i = 0; i < core::simulation_bands; ++i) {
+                                clamped_abs.s[i] = std::max(
+                                        surface.absorption.s[i], min_absorption);
+                            }
                             return to_impedance_coefficients(
                                     compute_reflectance_filter_coefficients(
-                                            surface.absorption.s,
+                                            clamped_abs.s,
                                             1 / config::time_step(speed_of_sound,
                                                                   mesh_spacing)));
                         } catch (const std::exception& e) {

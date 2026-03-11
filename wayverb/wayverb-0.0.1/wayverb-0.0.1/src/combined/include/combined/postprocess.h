@@ -381,6 +381,13 @@ auto postprocess(const combined_results<Histogram>& input,
     dc_block(waveguide_processed, output_sample_rate);
     dc_block(raytracer_processed, output_sample_rate);
 
+    //  Temporal alignment: shift signals so their direct sound onsets match.
+    //  The waveguide and raytracer have different propagation models that can
+    //  produce slightly different onset times.  Misalignment causes destructive
+    //  interference in the crossover band, producing a notch at the blend
+    //  frequency and an audible "hollow" coloration.
+    align_peaks(waveguide_processed, raytracer_processed);
+
     const auto cutoff = *std::max_element(make_iterator(begin(input.waveguide)),
                                           make_iterator(end(input.waveguide))) /
                         output_sample_rate;
@@ -425,12 +432,21 @@ auto postprocess(const combined_results<Histogram>& input,
               });
     }
 
-    //  Level-match waveguide low-freq to raytracer low-freq.
+    //  Spectral level-match: correct the waveguide low-freq spectrum to
+    //  match the raytracer's spectral shape in the crossover band.
+    //  A single broadband gain can't correct spectral tilt (e.g. waveguide
+    //  has too much bass, too little mid relative to raytracer).  Instead,
+    //  compute a smooth spectral correction curve and apply it.
+    //
+    //  Measurement window adapts to room size (mixing_time-based).
     {
         const auto measure_len = std::min(wg_lp.size(), rt_lp.size());
         const auto early_end = std::min(
                 measure_len,
-                static_cast<size_t>(0.1 * output_sample_rate));
+                static_cast<size_t>(
+                        (mixing_time * 2.0 + 0.05) * output_sample_rate));
+
+        //  Broadband level-match first (coarse correction).
         double wg_ss = 0.0, rt_ss = 0.0;
         for (size_t i = 0; i < early_end; ++i) {
             wg_ss += static_cast<double>(wg_lp[i]) * wg_lp[i];
@@ -442,9 +458,69 @@ auto postprocess(const combined_results<Histogram>& input,
                 ? static_cast<float>(rt_rms / wg_rms)
                 : 1.0f;
         for (auto& s : wg_lp) s *= gain;
+
+        //  Fine spectral correction: compute spectral ratio in the
+        //  crossover band and apply a smoothed correction curve.
+        //  This fixes spectral tilt differences between the two methods.
+        const auto corr_fft_len = frequency_domain::best_fft_length(
+                wg_lp.size()) << 2;
+        const auto corr_bins = corr_fft_len / 2 + 1;
+        std::vector<float> wg_mag(corr_bins, 0.0f);
+        std::vector<float> rt_mag(corr_bins, 0.0f);
+
+        //  Capture spectra of the early portion of both signals.
+        {
+            frequency_domain::filter spec_filt{corr_fft_len};
+            size_t k = 0;
+            spec_filt.run(begin(wg_lp), begin(wg_lp) + early_end,
+                          begin(wg_lp),  //  pass-through (capture mags only)
+                          [&](auto cplx, auto /*freq*/) {
+                              wg_mag[k++] = std::abs(cplx);
+                              return cplx;
+                          });
+            k = 0;
+            spec_filt.run(begin(rt_lp), begin(rt_lp) + early_end,
+                          begin(rt_lp),
+                          [&](auto cplx, auto /*freq*/) {
+                              rt_mag[k++] = std::abs(cplx);
+                              return cplx;
+                          });
+        }
+
+        //  Compute smoothed spectral correction (ratio of RT/WG magnitudes).
+        //  Smooth with a 32-bin running average to avoid noise in the ratio.
+        std::vector<float> correction(corr_bins, 1.0f);
+        constexpr size_t smooth_hw = 16;
+        for (size_t k = 0; k < corr_bins; ++k) {
+            const auto lo = (k > smooth_hw) ? k - smooth_hw : size_t{0};
+            const auto hi = std::min(corr_bins, k + smooth_hw + 1);
+            double sum_rt = 0.0, sum_wg = 0.0;
+            for (size_t j = lo; j < hi; ++j) {
+                sum_rt += rt_mag[j];
+                sum_wg += wg_mag[j];
+            }
+            if (sum_wg > 1e-10) {
+                //  Clamp correction to ±12 dB to prevent overcorrection.
+                const auto ratio = static_cast<float>(sum_rt / sum_wg);
+                correction[k] = std::clamp(ratio, 0.25f, 4.0f);
+            }
+        }
+
+        //  Apply spectral correction to the full waveguide low-pass signal.
+        {
+            frequency_domain::filter corr_filt{corr_fft_len};
+            size_t k = 0;
+            corr_filt.run(begin(wg_lp), end(wg_lp), begin(wg_lp),
+                          [&](auto cplx, auto /*freq*/) {
+                              const auto ci = std::min(k, corr_bins - 1);
+                              ++k;
+                              return cplx * correction[ci];
+                          });
+        }
+
         fprintf(stderr,
-                "[combined::postprocess] level-match gain=%.3f "
-                "(wg_rms=%.6f rt_rms=%.6f)\n",
+                "[combined::postprocess] spectral level-match: broadband "
+                "gain=%.3f (wg_rms=%.6f rt_rms=%.6f)\n",
                 gain, wg_rms, rt_rms);
         fflush(stderr);
     }
