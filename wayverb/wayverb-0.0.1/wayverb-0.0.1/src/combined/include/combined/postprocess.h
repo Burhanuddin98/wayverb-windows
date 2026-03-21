@@ -121,6 +121,33 @@ float inject_direct_sound(Vec& v,
     return direct_amp;
 }
 
+//  Strip the propagation-delay silence at the start of the IR.
+//  Keeps 2 samples of pre-onset margin for the sinc pre-ring.
+template <typename Vec>
+void trim_leading_silence(Vec& v) {
+    if (v.size() < 16) return;
+
+    //  Find first sample whose absolute value exceeds 0.1% of the peak.
+    float peak = 0.0f;
+    for (const auto& s : v) peak = std::max(peak, std::abs(s));
+    if (peak < 1e-10f) return;
+
+    const float thresh = peak * 0.001f;
+    size_t onset = 0;
+    for (size_t i = 0; i < v.size(); ++i) {
+        if (std::abs(v[i]) >= thresh) { onset = i; break; }
+    }
+
+    //  Keep a tiny margin (2 samples) so the attack isn't clipped.
+    const size_t trim = onset > 2 ? onset - 2 : 0;
+    if (trim == 0) return;
+
+    v.erase(v.begin(), v.begin() + trim);
+    fprintf(stderr, "[trim_leading_silence] removed %zu samples (%.1fms)\n",
+            trim, 1000.0 * trim / 44100.0);
+    fflush(stderr);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 //  IR quality helpers
 ////////////////////////////////////////////////////////////////////////////////
@@ -472,6 +499,7 @@ auto postprocess(const combined_results<Histogram>& input,
         }
         normalize_distance(raytracer_processed, output_sample_rate,
                            src_recv_distance, injected_amp);
+        trim_leading_silence(raytracer_processed);
         return raytracer_processed;
     }
 
@@ -696,6 +724,7 @@ auto postprocess(const combined_results<Histogram>& input,
     //  since the HRTF directional weighting is already baked into the signal.
     normalize_distance(filtered, output_sample_rate, src_recv_distance,
                        injected_amp);
+    trim_leading_silence(filtered);
 
     return filtered;
 }
