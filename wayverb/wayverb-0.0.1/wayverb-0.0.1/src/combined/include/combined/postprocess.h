@@ -122,29 +122,27 @@ float inject_direct_sound(Vec& v,
 }
 
 //  Strip the propagation-delay silence at the start of the IR.
-//  Keeps 2 samples of pre-onset margin for the sinc pre-ring.
+//  Uses the known source-receiver distance to compute exactly how many
+//  samples to trim, rather than threshold-based detection which is
+//  defeated by FFT filter pre-ringing.
 template <typename Vec>
-void trim_leading_silence(Vec& v) {
-    if (v.size() < 16) return;
+void trim_propagation_delay(Vec& v, double sample_rate,
+                            float distance, double speed_of_sound) {
+    if (v.size() < 64 || distance < 0.01f) return;
 
-    //  Find first sample whose absolute value exceeds 0.1% of the peak.
-    float peak = 0.0f;
-    for (const auto& s : v) peak = std::max(peak, std::abs(s));
-    if (peak < 1e-10f) return;
+    const auto delay_samples = static_cast<size_t>(
+            static_cast<double>(distance) / speed_of_sound * sample_rate);
 
-    const float thresh = peak * 0.001f;
-    size_t onset = 0;
-    for (size_t i = 0; i < v.size(); ++i) {
-        if (std::abs(v[i]) >= thresh) { onset = i; break; }
-    }
-
-    //  Keep a tiny margin (2 samples) so the attack isn't clipped.
-    const size_t trim = onset > 2 ? onset - 2 : 0;
-    if (trim == 0) return;
+    //  Keep a small margin (16 samples ≈ 0.36ms at 44.1kHz) so the
+    //  Blackman-windowed sinc pre-ring isn't clipped.
+    const size_t trim = delay_samples > 16 ? delay_samples - 16 : 0;
+    if (trim == 0 || trim >= v.size()) return;
 
     v.erase(v.begin(), v.begin() + trim);
-    fprintf(stderr, "[trim_leading_silence] removed %zu samples (%.1fms)\n",
-            trim, 1000.0 * trim / 44100.0);
+    fprintf(stderr,
+            "[trim_propagation_delay] removed %zu samples (%.1fms) "
+            "for d=%.2fm\n",
+            trim, 1000.0 * trim / sample_rate, distance);
     fflush(stderr);
 }
 
@@ -499,7 +497,8 @@ auto postprocess(const combined_results<Histogram>& input,
         }
         normalize_distance(raytracer_processed, output_sample_rate,
                            src_recv_distance, injected_amp);
-        trim_leading_silence(raytracer_processed);
+        trim_propagation_delay(raytracer_processed, output_sample_rate,
+                               src_recv_distance, environment.speed_of_sound);
         return raytracer_processed;
     }
 
@@ -724,7 +723,8 @@ auto postprocess(const combined_results<Histogram>& input,
     //  since the HRTF directional weighting is already baked into the signal.
     normalize_distance(filtered, output_sample_rate, src_recv_distance,
                        injected_amp);
-    trim_leading_silence(filtered);
+    trim_propagation_delay(filtered, output_sample_rate,
+                           src_recv_distance, environment.speed_of_sound);
 
     return filtered;
 }
