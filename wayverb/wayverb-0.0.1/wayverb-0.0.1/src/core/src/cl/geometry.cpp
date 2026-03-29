@@ -155,7 +155,11 @@ float3 get_direction(float3 from, float3 to) {
 bool line_segment_sphere_intersection(float3 p1, float3 p2, float3 sc, float r);
 bool line_segment_sphere_intersection(float3 p1, float3 p2, float3 sc, float r) {
     const float3 diff = p2 - p1;
-    const float u = dot(sc - p1, diff) / dot(diff, diff);
+    const float dd = dot(diff, diff);
+    if (dd < 1e-12f) {
+        return false;
+    }
+    const float u = dot(sc - p1, diff) / dd;
     if (u < 0 || 1 < u) {
         return false;
     }

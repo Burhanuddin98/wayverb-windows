@@ -34,7 +34,8 @@ T absorption_to_pressure_reflectance(T t) {
 
 template <typename T>
 constexpr T pressure_reflectance_to_average_wall_impedance(T t) {
-    return (1 + t) / (1 - t);
+    //  Guard: if any element of (1-t) is zero, the result is huge but finite.
+    return (1 + t) / (1 - t + 1e-6f);
 }
 
 template <typename T>
@@ -55,13 +56,15 @@ constexpr T average_wall_impedance_to_pressure_reflectance(T t,
 //  specular energy = (1 - s) (1 - a)
 
 template <typename T, typename U>
-constexpr T scattered_pressure(T total_reflected, U scattering) {
-    return total_reflected * scattering;
+T scattered_pressure(T total_reflected, U scattering) {
+    using std::sqrt;
+    return total_reflected * sqrt(scattering);
 }
 
 template <typename T, typename U>
-constexpr T specular_pressure(T total_reflected, U scattering) {
-    return total_reflected * (1 - scattering);
+T specular_pressure(T total_reflected, U scattering) {
+    using std::sqrt;
+    return total_reflected * sqrt(1 - scattering);
 }
 
 }  // namespace core

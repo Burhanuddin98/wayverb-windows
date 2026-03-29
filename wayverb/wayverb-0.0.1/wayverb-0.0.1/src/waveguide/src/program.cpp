@@ -162,7 +162,7 @@ void ghost_point_pressure_update(
     const filt_real b0 = boundary->b[0];
     const filt_real a0 = boundary->a[0];
 
-    const filt_real diff = (a0 * (prev_pressure - next_pressure)) / (b0 * courant) +
+    const filt_real diff = (a0 * (prev_pressure - next_pressure)) / b0 +
                       (filt_state / b0);
 #if 0
     const filt_real ghost_pressure = inner_pressure + diff;
@@ -319,7 +319,7 @@ GET_FILTER_WEIGHTING_TEMPLATE(3);
                     boundary_coefficients + bda->array[i].coefficient_index; \
             sum += boundary->a[0] / boundary->b[0];                          \
         }                                                                    \
-        return sum * courant;                                                \
+        return sum;                                                          \
     }
 
 GET_COEFF_WEIGHTING_TEMPLATE(1);

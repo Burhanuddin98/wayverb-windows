@@ -562,7 +562,7 @@ auto postprocess(const combined_results<Histogram>& input,
             if (sum_wg > 1e-10) {
                 //  Clamp correction to ±12 dB to prevent overcorrection.
                 const auto ratio = static_cast<float>(sum_rt / sum_wg);
-                correction[k] = std::clamp(ratio, 0.25f, 4.0f);
+                correction[k] = std::clamp(ratio, 0.125f, 8.0f);
             }
         }
 
