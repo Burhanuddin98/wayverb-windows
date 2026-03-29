@@ -93,7 +93,7 @@ void trim_leading_silence(Vec& v, double sample_rate) {
 inline double compute_mixing_time(double room_volume, double speed_of_sound) {
     const auto t_mix = std::sqrt(
             room_volume / (4.0 * M_PI * std::pow(speed_of_sound, 3.0)));
-    return std::max(0.01, std::min(t_mix, 0.5));
+    return std::max(0.005, std::min(t_mix, 2.0));
 }
 
 //  Enforce monotonic energy decay after the mixing time.
@@ -104,9 +104,9 @@ template <typename Vec>
 void enforce_decay(Vec& v, double sample_rate, double mixing_time) {
     if (v.size() < 2048) return;
 
-    //  Use 2048-sample windows (46ms at 44.1kHz) so individual reflections
-    //  don't trigger false decay enforcement.
-    constexpr size_t win = 2048;
+    //  Use 1024-sample windows (23ms at 44.1kHz) to detect shorter
+    //  unphysical bumps while still averaging over individual reflections.
+    constexpr size_t win = 1024;
     const size_t nw = v.size() / win;
     if (nw < 2) return;
 
@@ -228,8 +228,12 @@ void align_peaks(VecA& a, VecB& b) {
     if (a.empty() || b.empty()) return;
 
     const auto find_onset = [](const auto& v) -> size_t {
+        // Search first 4096 samples for peak (avoids locking onto late noise).
+        const auto search_len = std::min(v.size(), size_t{4096});
         float peak = 0.0f;
-        for (const auto& s : v) peak = std::max(peak, std::abs(s));
+        for (size_t i = 0; i < search_len; ++i)
+            peak = std::max(peak, std::abs(v[i]));
+        if (peak < 1e-10f) return 0;
         const float thresh = peak * 0.1f;
         for (size_t i = 0; i < v.size(); ++i) {
             if (std::abs(v[i]) >= thresh) return i;
@@ -318,24 +322,9 @@ auto crossover_filter(LoIt b_lo,
                  const auto phase_lo = std::arg(cplx_lo);
                  const auto phase_hi = std::arg(cplx_hi);
 
-                 const auto safe_cutoff =
-                         std::max(static_cast<float>(cutoff), 1e-6f);
-                 const auto safe_width =
-                         std::max(static_cast<float>(width), 0.05f);
-                 const auto t = 0.5f + 0.5f * std::tanh(
-                         3.0f * (static_cast<float>(freq) - safe_cutoff) /
-                         (safe_width * safe_cutoff));
-
-                 const auto unit_lo = std::polar(1.0f - t, phase_lo);
-                 const auto unit_hi = std::polar(t, phase_hi);
-                 const auto phasor_sum = unit_lo + unit_hi;
-
-                 float blended_phase;
-                 if (std::abs(phasor_sum) > 0.05f) {
-                     blended_phase = std::arg(phasor_sum);
-                 } else {
-                     blended_phase = phase_lo;
-                 }
+                 // Use the phase of whichever signal dominates at this frequency.
+                 // Smooth transition avoids phase jumps.
+                 const auto blended_phase = (lo_w > hi_w) ? phase_lo : phase_hi;
 
                  return std::polar(blended_mag, blended_phase);
              });

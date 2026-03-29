@@ -50,6 +50,22 @@ inline void place_direct_spike(util::aligned::vector<float>& signal,
         const auto s = core::sinc(t) * envelope;
         signal[idx] += static_cast<float>(amplitude * s);
     }
+
+    // Measure actual peak and correct to target amplitude.
+    float actual_peak = 0.0f;
+    for (int k = -HALF_W; k <= HALF_W; ++k) {
+        const auto idx = static_cast<ptrdiff_t>(centre) + k;
+        if (idx < 0 || static_cast<size_t>(idx) >= signal.size()) continue;
+        actual_peak = std::max(actual_peak, std::abs(signal[idx]));
+    }
+    if (actual_peak > 1e-10f && std::abs(actual_peak - amplitude) > amplitude * 0.01f) {
+        const auto correction = amplitude / actual_peak;
+        for (int k = -HALF_W; k <= HALF_W; ++k) {
+            const auto idx = static_cast<ptrdiff_t>(centre) + k;
+            if (idx < 0 || static_cast<size_t>(idx) >= signal.size()) continue;
+            signal[idx] *= correction;
+        }
+    }
 }
 
 template <typename Histogram, typename Method>

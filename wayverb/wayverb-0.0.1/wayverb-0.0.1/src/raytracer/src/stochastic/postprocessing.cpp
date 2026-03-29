@@ -175,8 +175,8 @@ static double compute_mixing_time(double room_volume, double speed_of_sound) {
     //  For a 5000 m³ room: t_mix ≈ 0.18 s (180 ms)
     const auto t_mix = std::sqrt(
             room_volume / (4.0 * M_PI * std::pow(speed_of_sound, 3.0)));
-    //  Clamp to [10ms, 500ms] for safety.
-    return std::max(0.01, std::min(t_mix, 0.5));
+    //  Clamp to [5ms, 2s] — allows very small enclosures and large halls.
+    return std::max(0.005, std::min(t_mix, 2.0));
 }
 
 /// Direct spectral synthesis of the stochastic reverb tail.

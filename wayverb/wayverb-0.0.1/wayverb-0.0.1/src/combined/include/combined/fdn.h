@@ -99,7 +99,7 @@ measure_band_rt60(const Vec& signal, double sample_rate,
     }
 
     // Use the last 50% of the signal for decay measurement.
-    const size_t measure_start = signal.size() / 2;
+    const size_t measure_start = signal.size() / 4;
     const size_t measure_len = signal.size() - measure_start;
 
     // Window size for energy measurement (4096 samples ≈ 93ms at 44.1kHz).

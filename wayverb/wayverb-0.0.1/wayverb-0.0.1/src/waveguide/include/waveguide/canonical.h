@@ -4,7 +4,7 @@
 #include "waveguide/calibration.h"
 #include "waveguide/fitted_boundary.h"
 #include "waveguide/postprocessor/directional_receiver.h"
-#include "waveguide/preprocessor/hard_source.h"
+#include "waveguide/preprocessor/soft_source.h"
 #include "waveguide/simulation_parameters.h"
 #include "waveguide/waveguide.h"
 
@@ -72,7 +72,7 @@ std::optional<band> canonical_impl(
     const auto steps =
             run(cc,
                 mesh,
-                preprocessor::make_hard_source(
+                preprocessor::make_soft_source(
                         compute_mesh_index(source), begin(input), end(input)),
                 [&](auto& queue, const auto& buffer, auto step) {
                     output_accumulator(queue, buffer, step);
