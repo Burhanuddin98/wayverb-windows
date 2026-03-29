@@ -1459,6 +1459,20 @@ ResultsContent::ResultsContent() {
     source_player_.setSource(&transport_);
     device_manager_.addAudioCallback(&source_player_);
 
+    // Output device selector
+    output_device_box_.setTextWhenNothingSelected("Output Device...");
+    output_device_box_.setColour(ComboBox::backgroundColourId, wv_theme::bg_panel);
+    output_device_box_.setColour(ComboBox::textColourId, wv_theme::text);
+    output_device_box_.setColour(ComboBox::arrowColourId, wv_theme::cyan);
+    output_device_box_.setColour(ComboBox::outlineColourId, wv_theme::grid);
+    output_device_box_.setColour(PopupMenu::backgroundColourId, wv_theme::bg_panel);
+    output_device_box_.setColour(PopupMenu::textColourId, wv_theme::text);
+    output_device_box_.setColour(PopupMenu::highlightedBackgroundColourId, wv_theme::emphasis);
+    output_device_box_.setColour(PopupMenu::highlightedTextColourId, Colours::white);
+    output_device_box_.addListener(this);
+    addAndMakeVisible(output_device_box_);
+    populateOutputDevices();
+
     // Transport bar
     transport_bar_ = std::make_unique<TransportBar>(transport_);
     addAndMakeVisible(transport_bar_.get());
@@ -1469,6 +1483,50 @@ ResultsContent::~ResultsContent() {
     transport_.setSource(nullptr);
     source_player_.setSource(nullptr);
     device_manager_.removeAudioCallback(&source_player_);
+}
+
+void ResultsContent::populateOutputDevices() {
+    output_device_box_.clear(dontSendNotification);
+    int id = 1;
+    auto current_type_name = device_manager_.getCurrentAudioDeviceType();
+    for (auto* type : device_manager_.getAvailableDeviceTypes()) {
+        type->scanForDevices();
+        auto names = type->getDeviceNames(false);  // false = output devices
+        for (auto& name : names) {
+            auto label = type->getTypeName() + ": " + name;
+            output_device_box_.addItem(label, id);
+            // Select the currently active device
+            if (auto* dev = device_manager_.getCurrentAudioDevice()) {
+                if (dev->getName() == name &&
+                    type->getTypeName() == current_type_name)
+                    output_device_box_.setSelectedId(id, dontSendNotification);
+            }
+            ++id;
+        }
+    }
+}
+
+void ResultsContent::comboBoxChanged(ComboBox* box) {
+    if (box != &output_device_box_) return;
+
+    auto selected = output_device_box_.getText();
+    auto colon = selected.indexOfChar(':');
+    if (colon < 0) return;
+
+    auto typeName = selected.substring(0, colon).trim();
+    auto deviceName = selected.substring(colon + 1).trim();
+
+    // Switch to the selected device type and device
+    for (auto* type : device_manager_.getAvailableDeviceTypes()) {
+        if (type->getTypeName() == typeName) {
+            device_manager_.setCurrentAudioDeviceType(typeName, true);
+            AudioDeviceManager::AudioDeviceSetup setup;
+            device_manager_.getAudioDeviceSetup(setup);
+            setup.outputDeviceName = deviceName;
+            device_manager_.setAudioDeviceSetup(setup, true);
+            break;
+        }
+    }
 }
 
 void ResultsContent::loadFiles(const std::vector<std::string>& paths,
@@ -2160,7 +2218,8 @@ void ResultsContent::resized() {
     play_conv_btn_.setBounds(bx, y, 100, ctrlH); bx += 104;
     stop_btn_.setBounds(bx, y, 44, ctrlH); bx += 48;
     loudness_mode_btn_.setBounds(bx, y, 130, ctrlH); bx += 134;
-    save_all_btn_.setBounds(bx, y, 80, ctrlH);
+    save_all_btn_.setBounds(bx, y, 80, ctrlH); bx += 84;
+    output_device_box_.setBounds(bx, y, std::max(200, W - bx - pad), ctrlH);
     y += ctrlH + gap;
 
     // ── LUFS ──

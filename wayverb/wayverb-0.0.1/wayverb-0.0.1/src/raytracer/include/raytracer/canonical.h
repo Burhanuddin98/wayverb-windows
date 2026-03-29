@@ -6,6 +6,7 @@
 #include "core/spatial_division/voxelised_scene_data.h"
 
 #include <atomic>
+#include <optional>
 
 namespace wayverb {
 namespace raytracer {
@@ -20,14 +21,19 @@ template <typename Histogram>
 struct simulation_results final {
     util::aligned::vector<impulse<core::simulation_bands>> image_source;
     Histogram stochastic;
+    /// Direct line-of-sight impulse, kept separate so it bypasses the
+    /// multiband filterbank and arrives as a clean broadband transient.
+    std::optional<impulse<core::simulation_bands>> direct;
 };
 
 template <typename Histogram>
 auto make_simulation_results(
         util::aligned::vector<impulse<core::simulation_bands>> image_source,
-        Histogram stochastic) {
+        Histogram stochastic,
+        std::optional<impulse<core::simulation_bands>> direct = std::nullopt) {
     return simulation_results<Histogram>{std::move(image_source),
-                                         std::move(stochastic)};
+                                         std::move(stochastic),
+                                         std::move(direct)};
 }
 
 template <typename Histogram>
@@ -69,11 +75,14 @@ auto canonical(
             keep_going,
             std::forward<Callback>(callback),
             make_canonical_callbacks(sim_params, visual_items));
-    return tup ? std::make_optional(make_canonical_results(
-                         make_simulation_results(std::move(std::get<0>(*tup)),
-                                                 std::move(std::get<1>(*tup))),
-                         std::move(std::get<2>(*tup))))
-               : std::nullopt;
+    using histogram_type = std::decay_t<decltype(std::get<1>(*tup))>;
+    if (!tup) return std::optional<canonical_results<histogram_type>>{};
+    auto& ism_results = std::get<0>(*tup);
+    return std::make_optional(make_canonical_results(
+                     make_simulation_results(std::move(ism_results.reflections),
+                                             std::move(std::get<1>(*tup)),
+                                             std::move(ism_results.direct)),
+                     std::move(std::get<2>(*tup))));
 }
 
 }  // namespace raytracer

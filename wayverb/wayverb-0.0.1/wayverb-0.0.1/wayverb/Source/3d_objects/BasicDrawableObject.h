@@ -82,6 +82,8 @@ public:
     void set_highlight(float amount);
 
 private:
+    void do_draw(const glm::mat4& model_matrix) const override;
+
     class shader_base {
     public:
         virtual ~shader_base() noexcept = default;
@@ -106,7 +108,6 @@ private:
         std::weak_ptr<T> t;
     };
 
-    void do_draw(const glm::mat4& model_matrix) const override;
     glm::mat4 get_local_model_matrix() const override;
 
     std::unique_ptr<shader_base> shader;

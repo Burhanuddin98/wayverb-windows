@@ -246,7 +246,8 @@ private:
 
 // ── Main results content ────────────────────────────────────────────────────
 class ResultsContent : public Component,
-                       public Button::Listener {
+                       public Button::Listener,
+                       public ComboBox::Listener {
 public:
     ResultsContent();
     ~ResultsContent() override;
@@ -256,6 +257,7 @@ public:
     void resized() override;
     void paint(Graphics& g) override;
     void buttonClicked(Button* b) override;
+    void comboBoxChanged(ComboBox* box) override;
 
 private:
     void loadDryAndConvolve();
@@ -338,6 +340,10 @@ private:
     AudioTransportSource transport_;
     std::unique_ptr<BufferAudioSource> buffer_source_;
     std::unique_ptr<TransportBar> transport_bar_;
+
+    // ── Output device selector ──
+    ComboBox output_device_box_;
+    void populateOutputDevices();
 };
 
 // ── Top-level results window ────────────────────────────────────────────────

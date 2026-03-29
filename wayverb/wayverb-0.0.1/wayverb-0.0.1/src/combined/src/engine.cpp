@@ -222,9 +222,24 @@ public:
                 }
                 ++weighted;
             }
+            //  Also weight the direct LOS impulse.
+            if (raytracer_output->aural.direct) {
+                auto& d = *raytracer_output->aural.direct;
+                const auto d_pos = core::to_vec3{}(d.position);
+                const auto d_dir = d_pos - source_;
+                const auto d_len = glm::length(d_dir);
+                if (d_len > 1e-6f) {
+                    const auto d_cos = glm::dot(d_dir / d_len, fwd);
+                    const auto d_gain = model::directivity_gain(
+                            source_directivity_, d_cos);
+                    for (int b = 0; b < core::simulation_bands; ++b) {
+                        d.volume.s[b] *= d_gain;
+                    }
+                }
+            }
             fprintf(stderr,
                     "[engine] directivity weighting: pattern=%d, "
-                    "weighted %zu/%zu image source impulses\n",
+                    "weighted %zu/%zu image source impulses + direct\n",
                     static_cast<int>(source_directivity_),
                     weighted,
                     raytracer_output->aural.image_source.size());

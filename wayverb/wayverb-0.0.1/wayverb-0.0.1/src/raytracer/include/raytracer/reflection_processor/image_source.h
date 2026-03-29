@@ -6,6 +6,8 @@
 #include "core/environment.h"
 #include "core/spatial_division/scene_buffers.h"
 
+#include <optional>
+
 namespace wayverb {
 namespace raytracer {
 namespace reflection_processor {
@@ -35,6 +37,11 @@ private:
 
 ////////////////////////////////////////////////////////////////////////////////
 
+struct image_source_results final {
+    util::aligned::vector<impulse<core::simulation_bands>> reflections;
+    std::optional<impulse<core::simulation_bands>> direct;
+};
+
 class image_source_processor final {
 public:
     image_source_processor(
@@ -51,7 +58,7 @@ public:
             size_t num_directions) const;
     void accumulate(const image_source_group_processor& processor);
 
-    util::aligned::vector<impulse<core::simulation_bands>> get_results() const;
+    image_source_results get_results() const;
 
 private:
     glm::vec3 source_;

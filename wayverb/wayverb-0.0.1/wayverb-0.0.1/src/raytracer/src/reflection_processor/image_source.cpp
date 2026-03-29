@@ -46,7 +46,7 @@ void image_source_processor::accumulate(
     }
 }
 
-util::aligned::vector<impulse<core::simulation_bands>> image_source_processor::get_results() const {
+image_source_results image_source_processor::get_results() const {
     //  Fetch the stochastic (ray-traced) image source results.
     auto ret = raytracer::image_source::postprocess_branches(
             begin(tree_.get_branches()),
@@ -75,20 +75,22 @@ util::aligned::vector<impulse<core::simulation_bands>> image_source_processor::g
                 std::move(ret), std::move(det_impulses));
     }
 
-    //  Add the line-of-sight contribution, which isn't directly detected by
-    //  the image-source machinery.
-    using namespace image_source;
-    if (const auto direct = get_direct(source_, receiver_, voxelised_)) {
-        ret.emplace_back(*direct);
-    }
-
-    //  Correct for distance travelled.
+    //  Correct for distance travelled (reflections only).
     for (auto& imp : ret) {
         imp.volume *= core::pressure_for_distance(
                 imp.distance, environment_.acoustic_impedance);
     }
 
-    return ret;
+    //  Direct LOS impulse returned separately so it can bypass the
+    //  multiband filterbank and arrive as a clean broadband transient.
+    using namespace image_source;
+    auto direct = get_direct(source_, receiver_, voxelised_);
+    if (direct) {
+        direct->volume *= core::pressure_for_distance(
+                direct->distance, environment_.acoustic_impedance);
+    }
+
+    return {std::move(ret), std::move(direct)};
 }
 
 ////////////////////////////////////////////////////////////////////////////////

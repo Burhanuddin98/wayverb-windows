@@ -103,6 +103,21 @@ public:
                                     glm::vec4{a, 0.0f, 0.0f, 1.0f}};
                     ret.set_scale(source_receiver_radius_);
                     ret.set_position(source->get_position());
+                    ret.set_pointing({source->get_orientation().get_pointing()});
+                    const auto pattern = source->get_directivity();
+                    ret.set_pattern([pattern](float cos_theta) {
+                        //  Raw gain without clamping — abs() shows rear lobes.
+                        using P = wayverb::combined::model::directivity_pattern;
+                        switch (pattern) {
+                            case P::omnidirectional: return 1.0f;
+                            case P::cardioid:        return std::abs(0.5f * (1.0f + cos_theta));
+                            case P::supercardioid:   return std::abs(0.37f + 0.63f * cos_theta);
+                            case P::hypercardioid:   return std::abs(0.25f + 0.75f * cos_theta);
+                            case P::figure_eight:    return std::abs(cos_theta);
+                            case P::hemisphere:      return cos_theta > 0.0f ? cos_theta : 0.0f;
+                            default:                 return 1.0f;
+                        }
+                    });
                     return ret;
                 });
     }
@@ -117,19 +132,41 @@ public:
                                                                    : 0.7f;
                     PointObject ret{generic_shader_,
                                     glm::vec4{0.0f, a, a, 1.0f}};
-                    ret.set_pointing(util::map_to_vector(
-                            std::begin(*receiver->capsules()),
-                            std::end(*receiver->capsules()),
-                            [&](const auto& capsule) {
-                                const auto receiver_orientation =
-                                        receiver->get_orientation();
-                                const auto capsule_orientation =
-                                        get_orientation(*capsule);
-                                const auto orientation =
-                                        combine(receiver_orientation,
-                                                capsule_orientation);
-                                return orientation.get_pointing();
-                            }));
+
+                    //  Build pointing directions AND per-capsule patterns.
+                    util::aligned::vector<glm::vec3> directions;
+                    std::vector<capsule_pattern> caps_patterns;
+
+                    for (auto it = std::begin(*receiver->capsules());
+                         it != std::end(*receiver->capsules()); ++it) {
+                        const auto& capsule = *it;
+                        const auto recv_ori = receiver->get_orientation();
+                        const auto cap_ori = get_orientation(*capsule);
+                        const auto ori = combine(recv_ori, cap_ori);
+                        const auto pointing = ori.get_pointing();
+                        directions.push_back(pointing);
+
+                        capsule_pattern cp;
+                        cp.pointing = pointing;
+                        if (capsule->get_mode() ==
+                            wayverb::combined::model::capsule::mode::microphone) {
+                            const auto shape =
+                                    capsule->microphone()->get().get_shape();
+                            cp.gain_func = [shape](float cos_theta) {
+                                return std::abs(
+                                        (1.0f - shape) + shape * cos_theta);
+                            };
+                        } else {
+                            //  HRTF — approximate as cardioid.
+                            cp.gain_func = [](float cos_theta) {
+                                return std::abs(0.5f + 0.5f * cos_theta);
+                            };
+                        }
+                        caps_patterns.push_back(std::move(cp));
+                    }
+
+                    ret.set_pointing(directions);
+                    ret.set_patterns(caps_patterns);
                     ret.set_scale(source_receiver_radius_);
                     ret.set_position(receiver->get_position());
                     return ret;
@@ -161,6 +198,7 @@ public:
 
         glEnable(GL_PROGRAM_POINT_SIZE);
         glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_TRUE);
 
         glEnable(GL_MULTISAMPLE);
         glEnable(GL_LINE_SMOOTH);

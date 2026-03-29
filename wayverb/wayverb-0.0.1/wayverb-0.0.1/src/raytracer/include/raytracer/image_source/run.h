@@ -41,7 +41,12 @@ auto run(
         throw std::runtime_error{"Raytracer failed to generate results."};
     }
 
-    return std::move(std::get<0>(*results));
+    auto& ism = std::get<0>(*results);
+    //  Merge direct impulse back into reflections for legacy callers.
+    if (ism.direct) {
+        ism.reflections.emplace_back(*ism.direct);
+    }
+    return std::move(ism.reflections);
 }
 
 }  // namespace image_source

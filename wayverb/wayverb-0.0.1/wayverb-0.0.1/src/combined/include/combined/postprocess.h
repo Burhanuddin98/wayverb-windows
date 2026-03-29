@@ -9,7 +9,6 @@
 #include "waveguide/dispersion_compensation.h"
 #include "waveguide/postprocess.h"
 
-#include "core/sinc.h"
 #include "core/sum_ranges.h"
 
 #include "audio_file/audio_file.h"
@@ -41,108 +40,47 @@ auto make_combined_results(
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-//  Direct sound injection
+//  Direct sound
 ////////////////////////////////////////////////////////////////////////////////
-
-//  The multiband filter (16 bandpass filters + sum) disperses broadband
-//  impulses: the direct sound spike is spread into 16 ringing waveforms whose
-//  summed peak is far below the original.  This makes the direct sound
-//  invisible in the final IR.
 //
-//  Fix: after the raytracer produces its (dispersed) output, inject a clean
-//  broadband direct sound spike at the correct sample position with the
-//  theoretical 1/r amplitude.  The dispersed residual is small relative to the
-//  clean spike, so the double-count is negligible (< 1 dB).
+//  The direct sound now bypasses the multiband filterbank entirely.
+//  raytracer::postprocess() places it as a clean broadband sinc spike
+//  directly into the output signal and reports the amplitude/distance
+//  via raytracer::postprocessed_result.  No injection hack needed here.
+
+//  Strip leading silence from the IR.
+//  Finds the first sample whose magnitude exceeds a fraction of the peak,
+//  then trims everything before it (with a small safety margin).
+//  This is robust to alignment shifts and onset delays that the old
+//  distance-based trim couldn't account for.
 template <typename Vec>
-float inject_direct_sound(Vec& v,
-                          double sample_rate,
-                          float src_recv_distance,
-                          double speed_of_sound,
-                          double acoustic_impedance) {
-    if (src_recv_distance < 0.01f) return 0.0f;
+void trim_leading_silence(Vec& v, double sample_rate) {
+    if (v.size() < 64) return;
 
-    const auto direct_time = static_cast<double>(src_recv_distance) / speed_of_sound;
-    const auto direct_sample = direct_time * sample_rate;
-    const auto centre = static_cast<size_t>(direct_sample);
+    float peak = 0.0f;
+    for (const auto& s : v) peak = std::max(peak, std::abs(s));
+    if (peak < 1e-10f) return;
 
-    if (centre + 32 >= v.size()) return 0.0f;
-
-    //  Theoretical pressure at this distance (inverse distance law).
-    const auto direct_amp = static_cast<float>(
-            core::pressure_for_distance(src_recv_distance, acoustic_impedance));
-
-    //  Check that the raytracer actually produced energy near the expected
-    //  direct sound time.  If there is none, LOS was blocked and we must not
-    //  inject a false direct sound.
-    const auto search_lo = centre > 64 ? centre - 64 : size_t{0};
-    const auto search_hi = std::min(v.size(), centre + 64);
-    float existing_peak = 0.0f;
-    for (size_t i = search_lo; i < search_hi; ++i) {
-        existing_peak = std::max(existing_peak, std::abs(v[i]));
-    }
-    //  Threshold: if the existing peak near direct-sound time is < 0.1% of the
-    //  theoretical amplitude, the LOS was probably blocked.
-    if (existing_peak < direct_amp * 0.001f) {
-        fprintf(stderr,
-                "[inject_direct_sound] skipped — no LOS energy "
-                "(existing_peak=%.6f threshold=%.6f)\n",
-                existing_peak, direct_amp * 0.001f);
-        fflush(stderr);
-        return 0.0f;
+    //  Threshold: first sample at 0.1% of peak (-60 dB).
+    //  Low enough to catch the sinc pre-ring before the direct spike.
+    const float thresh = peak * 0.001f;
+    size_t onset = 0;
+    for (size_t i = 0; i < v.size(); ++i) {
+        if (std::abs(v[i]) >= thresh) {
+            onset = i;
+            break;
+        }
     }
 
-    //  Inject a short Blackman-windowed sinc spike (width = 16 samples).
-    //  This is broadband and preserves the sharp transient character of the
-    //  direct sound without the ringing that the 16-band filter bank produces.
-    constexpr int HALF_W = 8;
-    const auto frac = direct_sample - static_cast<double>(centre);
-
-    for (int k = -HALF_W; k <= HALF_W; ++k) {
-        const auto idx = static_cast<ptrdiff_t>(centre) + k;
-        if (idx < 0 || static_cast<size_t>(idx) >= v.size()) continue;
-
-        const auto t = static_cast<double>(k) - frac;
-        //  Blackman window centred on the spike.
-        const auto offset = (t / (2 * HALF_W)) + 0.5;
-        const auto envelope =
-                0.42 - 0.5 * std::cos(2 * M_PI * offset)
-                     + 0.08 * std::cos(4 * M_PI * offset);
-        const auto s = core::sinc(t) * envelope;
-        v[idx] += static_cast<float>(direct_amp * s);
-    }
-
-    fprintf(stderr,
-            "[inject_direct_sound] injected: d=%.2fm t=%.4fs sample=%zu "
-            "amp=%.6f existing_peak=%.6f\n",
-            src_recv_distance, direct_time, centre,
-            direct_amp, existing_peak);
-    fflush(stderr);
-
-    return direct_amp;
-}
-
-//  Strip the propagation-delay silence at the start of the IR.
-//  Uses the known source-receiver distance to compute exactly how many
-//  samples to trim, rather than threshold-based detection which is
-//  defeated by FFT filter pre-ringing.
-template <typename Vec>
-void trim_propagation_delay(Vec& v, double sample_rate,
-                            float distance, double speed_of_sound) {
-    if (v.size() < 64 || distance < 0.01f) return;
-
-    const auto delay_samples = static_cast<size_t>(
-            static_cast<double>(distance) / speed_of_sound * sample_rate);
-
-    //  Keep a small margin (16 samples ≈ 0.36ms at 44.1kHz) so the
-    //  Blackman-windowed sinc pre-ring isn't clipped.
-    const size_t trim = delay_samples > 16 ? delay_samples - 16 : 0;
-    if (trim == 0 || trim >= v.size()) return;
+    //  Keep 16 samples before onset so the Blackman window pre-ring
+    //  isn't clipped.
+    const size_t trim = onset > 16 ? onset - 16 : 0;
+    if (trim == 0) return;
 
     v.erase(v.begin(), v.begin() + trim);
     fprintf(stderr,
-            "[trim_propagation_delay] removed %zu samples (%.1fms) "
-            "for d=%.2fm\n",
-            trim, 1000.0 * trim / sample_rate, distance);
+            "[trim_leading_silence] removed %zu samples (%.1fms)\n",
+            trim, 1000.0 * trim / sample_rate);
     fflush(stderr);
 }
 
@@ -452,14 +390,17 @@ auto postprocess(const combined_results<Histogram>& input,
     }
 
     fprintf(stderr, "[combined::postprocess] raytracer postprocess...\n"); fflush(stderr);
-    auto raytracer_processed = raytracer::postprocess(input.raytracer,
-                                                       method,
-                                                       receiver_position,
-                                                       room_volume,
-                                                       environment,
-                                                       output_sample_rate);
-    fprintf(stderr, "[combined::postprocess] raytracer done, len=%zu\n",
-            raytracer_processed.size()); fflush(stderr);
+    auto rt_result = raytracer::postprocess(input.raytracer,
+                                            method,
+                                            receiver_position,
+                                            room_volume,
+                                            environment,
+                                            output_sample_rate);
+    auto raytracer_processed = std::move(rt_result.signal);
+    const auto direct_amp = rt_result.direct_amplitude;
+    const auto direct_dist = rt_result.direct_distance;
+    fprintf(stderr, "[combined::postprocess] raytracer done, len=%zu direct_amp=%.6f\n",
+            raytracer_processed.size(), direct_amp); fflush(stderr);
 
     const auto make_iterator = [](auto it) {
         return util::make_mapping_iterator_adapter(std::move(it),
@@ -477,13 +418,6 @@ auto postprocess(const combined_results<Histogram>& input,
     const auto src_recv_distance = static_cast<float>(
             glm::distance(source_position, receiver_position));
 
-    //  Inject broadband direct sound spike before any filtering.
-    //  This restores the sharp transient that the 16-band multiband filter
-    //  dispersed during image-source postprocessing.
-    const auto injected_amp = inject_direct_sound(
-            raytracer_processed, output_sample_rate, src_recv_distance,
-            environment.speed_of_sound, environment.acoustic_impedance);
-
     if (input.waveguide.empty()) {
         //  Raytracer-only: DC-block, FDN tail extension, distance-normalize.
         dc_block(raytracer_processed, output_sample_rate);
@@ -496,9 +430,8 @@ auto postprocess(const combined_results<Histogram>& input,
                                  room_volume, environment.speed_of_sound, ext);
         }
         normalize_distance(raytracer_processed, output_sample_rate,
-                           src_recv_distance, injected_amp);
-        trim_propagation_delay(raytracer_processed, output_sample_rate,
-                               src_recv_distance, environment.speed_of_sound);
+                           src_recv_distance, direct_amp);
+        trim_leading_silence(raytracer_processed, output_sample_rate);
         return raytracer_processed;
     }
 
@@ -722,9 +655,8 @@ auto postprocess(const combined_results<Histogram>& input,
     //  For HRTF: both ears get the same distance-based scale, preserving ILD
     //  since the HRTF directional weighting is already baked into the signal.
     normalize_distance(filtered, output_sample_rate, src_recv_distance,
-                       injected_amp);
-    trim_propagation_delay(filtered, output_sample_rate,
-                           src_recv_distance, environment.speed_of_sound);
+                       direct_amp);
+    trim_leading_silence(filtered, output_sample_rate);
 
     return filtered;
 }

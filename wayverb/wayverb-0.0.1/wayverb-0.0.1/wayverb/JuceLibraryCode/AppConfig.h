@@ -55,15 +55,15 @@
 #endif
 
 #ifndef    JUCE_WASAPI
- //#define JUCE_WASAPI
+ #define JUCE_WASAPI 1
 #endif
 
 #ifndef    JUCE_WASAPI_EXCLUSIVE
- //#define JUCE_WASAPI_EXCLUSIVE
+ #define JUCE_WASAPI_EXCLUSIVE 0
 #endif
 
 #ifndef    JUCE_DIRECTSOUND
- //#define JUCE_DIRECTSOUND
+ #define JUCE_DIRECTSOUND 1
 #endif
 
 #ifndef    JUCE_ALSA
