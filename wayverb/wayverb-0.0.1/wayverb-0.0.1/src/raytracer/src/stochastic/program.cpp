@@ -105,13 +105,18 @@ kernel void stochastic(const global reflection* reflections,
     //  compute output
     
     //  specular output
+    //  Only the specular (non-scattered) fraction of energy propagates
+    //  along the mirror-reflection path.  Using per-band (1 - scattering)
+    //  weighting so that high frequencies (which scatter more) contribute
+    //  less to specular paths — this is physically correct.
     if (line_segment_sphere_intersection(
                 last_position, this_position, receiver, receiver_radius)) {
         const float3 to_receiver = receiver - last_position;
         const float to_receiver_distance = length(to_receiver);
         const float total_distance = last_distance + to_receiver_distance;
 
-        const bands_type output_volume = last_volume;
+        const bands_type output_volume =
+                specular(last_volume, reflective_surface.scattering);
 
         intersected_output[thread] =
                 (impulse){output_volume, last_position, total_distance};

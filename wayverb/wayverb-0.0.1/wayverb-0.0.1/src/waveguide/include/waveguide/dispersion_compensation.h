@@ -1,17 +1,18 @@
 #pragma once
 
 /// \file dispersion_compensation.h
-/// Post-processing frequency warping to compensate for the numerical
-/// dispersion of the 7-point rectilinear FDTD stencil.
+/// Post-processing frequency warping to compensate for the residual numerical
+/// dispersion of the IWB 19-point FDTD stencil.
 ///
-/// The 3D 7-point scheme at the Courant limit (lambda = 1/sqrt(3)) has
-/// the axis-aligned dispersion relation:
-///   cos(omega_num * dt) = 2/3 + cos(k*h) / 3
-/// True relation: omega = c * k.
+/// The IWB scheme (Kowalczyk & van Walstijn, 2011) with alpha=3/4, beta=1/4
+/// at the Courant limit (lambda^2 = 1/3) has the axis-aligned dispersion
+/// relation:
+///   cos(omega_num * dt) = 7/12 + (5/12) * cos(k*h)
 ///
-/// High-frequency waves propagate slower numerically, causing modal
-/// frequencies to shift downward and spectrograms to appear smeared.
-/// This filter stretches the spectrum back to the correct frequencies.
+/// This is much more isotropic than the old 7-point scheme (which had
+///   cos(omega_num * dt) = 2/3 + (1/3) * cos(k*h)),
+/// but still has residual axis-aligned dispersion that this filter corrects.
+/// The IWB scheme is accurate to ~90% of Nyquist (vs ~40% for 7-point).
 
 #include "frequency_domain/multiband_filter.h"
 
@@ -65,8 +66,9 @@ inline void compensate_dispersion(Vec& signal,
     //  numerical frequency f_num where that content actually ended up
     //  in the dispersed waveguide output, and interpolate from there.
     //
-    //  Inverse warp (true -> numerical):
-    //    nu_num = (1/2pi) * arccos( (cos(2*pi*nu_true) + 2) / 3 )
+    //  IWB inverse warp (true -> numerical):
+    //    cos(2*pi*nu_num) = 7/12 + (5/12) * cos(2*pi*nu_true)
+    //    nu_num = (1/2pi) * arccos( 7/12 + (5/12) * cos(2*pi*nu_true) )
     //  where nu = f / f_waveguide (normalised to waveguide rate).
     idx = 0;
     size_t warped_bins = 0;
@@ -89,9 +91,10 @@ inline void compensate_dispersion(Vec& signal,
                      return std::complex<float>{0, 0};
                  }
 
-                 //  Inverse dispersion warp.
+                 //  IWB inverse dispersion warp.
+                 //  IWB axis-aligned: cos(w*dt) = 7/12 + (5/12)*cos(k*h)
                  const double cos_true = std::cos(2.0 * M_PI * nu_true);
-                 const double arg = (cos_true + 2.0) / 3.0;
+                 const double arg = 7.0 / 12.0 + (5.0 / 12.0) * cos_true;
                  if (arg < -1.0 || arg > 1.0) {
                      return std::complex<float>{0, 0};
                  }

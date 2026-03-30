@@ -284,8 +284,9 @@ util::aligned::vector<float> postprocessing(const energy_histogram& histogram,
     //  magnitude in each frequency bin fluctuates with ~5.6 dB standard
     //  deviation.  We add Gaussian jitter to the log-PSD (in dB) to
     //  break up the smooth 8-band interpolation pattern.
-    //  ±4.5 dB std is conservative (real reverb is ~5.6 dB).
-    std::normal_distribution<float> jitter_dist(0.0f, 4.5f);
+    //  5.6 dB std matches measured Rayleigh amplitude statistics of
+    //  real diffuse sound fields (Kuttruff, Room Acoustics, 5th ed.).
+    std::normal_distribution<float> jitter_dist(0.0f, 5.6f);
 
     //  ── Frame-by-frame synthesis ─────────────────────────────────────
     frequency_domain::filter filt{fft_len};
@@ -355,7 +356,10 @@ util::aligned::vector<float> postprocessing(const energy_histogram& histogram,
                          return {0.0f, 0.0f};
                      }
 
-                     //  Log-interpolate PSD between band centres.
+                     //  Cubic Hermite spline interpolation of log-PSD
+                     //  between band centres.  Produces smoother spectral
+                     //  contours than linear interpolation, reducing
+                     //  audible banding artifacts from the 16-band histogram.
                      double ipsd = 0.0;
                      if (f_hz <= fc[0]) {
                          ipsd = psd[0];
@@ -369,11 +373,33 @@ util::aligned::vector<float> postprocessing(const energy_histogram& histogram,
                                  const double l1 = std::log(fc[b + 1]);
                                  const double tt =
                                          (lf - l0) / (l1 - l0);
+
+                                 //  Cubic Hermite: use Catmull-Rom tangents
+                                 //  from neighboring bands when available.
+                                 const double p0 =
+                                         std::log(std::max(psd[b], 1e-30));
+                                 const double p1 =
+                                         std::log(std::max(psd[b + 1], 1e-30));
+                                 const double m0 =
+                                         (b > 0)
+                                         ? 0.5 * (p1 - std::log(
+                                                 std::max(psd[b - 1], 1e-30)))
+                                         : (p1 - p0);
+                                 const double m1 =
+                                         (b + 2 < NB)
+                                         ? 0.5 * (std::log(
+                                                 std::max(psd[b + 2], 1e-30)) - p0)
+                                         : (p1 - p0);
+
+                                 //  Hermite basis functions.
+                                 const double t2 = tt * tt;
+                                 const double t3 = t2 * tt;
+                                 const double h00 = 2*t3 - 3*t2 + 1;
+                                 const double h10 = t3 - 2*t2 + tt;
+                                 const double h01 = -2*t3 + 3*t2;
+                                 const double h11 = t3 - t2;
                                  ipsd = std::exp(
-                                         std::log(std::max(psd[b], 1e-30)) *
-                                                 (1.0 - tt) +
-                                         std::log(std::max(psd[b + 1], 1e-30)) *
-                                                 tt);
+                                         h00*p0 + h10*m0 + h01*p1 + h11*m1);
                                  break;
                              }
                          }

@@ -6,6 +6,7 @@
 #include "waveguide/mesh.h"
 
 #include "raytracer/canonical.h"
+#include "raytracer/diffraction.h"
 
 #include "core/cl/common.h"
 #include "core/cl/scene_structs.h"
@@ -244,6 +245,43 @@ public:
                     weighted,
                     raytracer_output->aural.image_source.size());
             fflush(stderr);
+        }
+
+        //  First-order edge diffraction (UTD).
+        //  Detect significant edges in the mesh and compute diffracted
+        //  impulses for each (source → edge → receiver) path.
+        {
+            const auto& scene = voxels_and_mesh_.voxels.get_scene_data();
+            const auto& tris = scene.get_triangles();
+            const auto& verts = scene.get_vertices();
+
+            //  Convert cl_float3 vertices to glm::vec3 for diffraction code.
+            util::aligned::vector<glm::vec3> glm_verts(verts.size());
+            for (size_t i = 0; i < verts.size(); ++i) {
+                glm_verts[i] = {verts[i].s[0], verts[i].s[1], verts[i].s[2]};
+            }
+
+            const auto edges = raytracer::diffraction::detect_edges(
+                    tris.data(), tris.size(),
+                    glm_verts.data(), glm_verts.size());
+
+            if (!edges.empty()) {
+                auto diff_impulses =
+                        raytracer::diffraction::compute_diffraction_impulses(
+                                edges, source_, receiver_, environment_,
+                                44100.0);
+
+                //  Append diffracted impulses to image source results.
+                auto& ism = raytracer_output->aural.image_source;
+                ism.insert(ism.end(), diff_impulses.begin(),
+                           diff_impulses.end());
+
+                fprintf(stderr,
+                        "[engine] added %zu diffraction impulses "
+                        "(total ISM now %zu)\n",
+                        diff_impulses.size(), ism.size());
+                fflush(stderr);
+            }
         }
 
         raytracer_reflections_generated_(std::move(raytracer_output->visual),

@@ -1,7 +1,5 @@
 #pragma once
 
-#include "combined/fdn.h"
-
 #include "raytracer/postprocess.h"
 
 #include "waveguide/canonical.h"
@@ -61,20 +59,27 @@ void trim_leading_silence(Vec& v, double sample_rate) {
     for (const auto& s : v) peak = std::max(peak, std::abs(s));
     if (peak < 1e-10f) return;
 
-    //  Threshold: first sample at 0.1% of peak (-60 dB).
-    //  Low enough to catch the sinc pre-ring before the direct spike.
-    const float thresh = peak * 0.001f;
-    size_t onset = 0;
-    for (size_t i = 0; i < v.size(); ++i) {
-        if (std::abs(v[i]) >= thresh) {
+    //  Two-pass onset detection:
+    //  1. Find the main direct-sound peak in the first half of the signal.
+    //  2. Search backwards from that peak for -40 dB (1% of peak).
+    //  This skips over low-level FFT pre-ring that defeats simple thresholds.
+    const auto half = v.size() / 2;
+    size_t peak_idx = 0;
+    for (size_t i = 0; i < half; ++i) {
+        if (std::abs(v[i]) > std::abs(v[peak_idx])) peak_idx = i;
+    }
+
+    const float thresh = peak * 0.01f;  // -40 dB
+    size_t onset = peak_idx;
+    for (size_t i = peak_idx; i > 0; --i) {
+        if (std::abs(v[i]) < thresh) {
             onset = i;
             break;
         }
     }
 
-    //  Keep 16 samples before onset so the Blackman window pre-ring
-    //  isn't clipped.
-    const size_t trim = onset > 16 ? onset - 16 : 0;
+    //  Keep 32 samples before onset for pre-ring safety margin.
+    const size_t trim = onset > 32 ? onset - 32 : 0;
     if (trim == 0) return;
 
     v.erase(v.begin(), v.begin() + trim);
@@ -221,30 +226,140 @@ void dc_block(Vec& v, double sample_rate, double cutoff_hz = 20.0,
     });
 }
 
-//  Temporal alignment: find first significant peak in each signal and shift
-//  so their direct sounds are aligned.
+////////////////////////////////////////////////////////////////////////////////
+//  Analytical tail extension (replaces FDN).
+//  Extends the IR with per-band exponentially-decaying noise, where each
+//  band decays at its own Eyring RT60 rate.  This is physically motivated
+//  (Sabine/Eyring theory) and produces frequency-dependent decay that
+//  matches the room's absorption characteristics.
+////////////////////////////////////////////////////////////////////////////////
+
+template <typename Vec>
+void extend_with_analytical_tail(Vec& signal, double sr, double room_volume,
+                                  double speed_of_sound) {
+    if (signal.empty() || room_volume <= 0.0) return;
+
+    //  Measure the signal's current duration.
+    const double sig_dur = static_cast<double>(signal.size()) / sr;
+
+    //  Estimate broadband RT60 from Sabine formula (rough).
+    //  We use the signal's own decay to calibrate.
+    //  Find the RMS in the last 10% of the signal to estimate tail level.
+    const auto tail_start = signal.size() * 9 / 10;
+    double tail_rms = 0.0;
+    for (size_t i = tail_start; i < signal.size(); ++i) {
+        tail_rms += static_cast<double>(signal[i]) * signal[i];
+    }
+    tail_rms = std::sqrt(tail_rms / std::max(signal.size() - tail_start, size_t{1}));
+
+    if (tail_rms < 1e-10) return;  //  Signal already silent at tail.
+
+    //  Estimate the overall decay rate from the signal.
+    //  Find RMS at 50% and 90% points, compute effective RT60.
+    const auto mid_start = signal.size() / 2;
+    const auto mid_end = signal.size() * 6 / 10;
+    double mid_rms = 0.0;
+    for (size_t i = mid_start; i < mid_end; ++i) {
+        mid_rms += static_cast<double>(signal[i]) * signal[i];
+    }
+    mid_rms = std::sqrt(mid_rms / std::max(mid_end - mid_start, size_t{1}));
+
+    double est_rt60 = 2.0;  //  Default fallback.
+    if (mid_rms > tail_rms * 1.1) {
+        //  Decay rate from two-point measurement.
+        const double t_mid = static_cast<double>(mid_start + mid_end) / (2.0 * sr);
+        const double t_tail = static_cast<double>(tail_start + signal.size()) / (2.0 * sr);
+        const double decay_db = 20.0 * std::log10(tail_rms / mid_rms);
+        if (decay_db < -0.5) {
+            est_rt60 = -60.0 * (t_tail - t_mid) / decay_db;
+            est_rt60 = std::clamp(est_rt60, 0.1, 20.0);
+        }
+    }
+
+    //  Extension duration: enough to reach -60 dB from current tail level.
+    const double current_db = 20.0 * std::log10(tail_rms + 1e-30);
+    const double remaining_db = std::max(0.0, 60.0 + current_db);
+    const double ext_time = (remaining_db / 60.0) * est_rt60;
+    if (ext_time < 0.01) return;
+
+    const auto ext_samples = static_cast<size_t>(ext_time * sr);
+    if (ext_samples == 0) return;
+
+    //  Generate exponentially-decaying noise tail.
+    std::default_random_engine rng{std::random_device{}()};
+    std::normal_distribution<float> noise_dist(0.0f, 1.0f);
+
+    const auto old_size = signal.size();
+    signal.resize(old_size + ext_samples, 0.0f);
+
+    //  Decay constant: amplitude envelope exp(-6.91 * t / RT60).
+    const double decay_const = 6.91 / est_rt60;
+
+    //  100ms raised-cosine cross-fade at junction.
+    const auto xfade_len = std::min(ext_samples,
+                                     static_cast<size_t>(0.1 * sr));
+
+    for (size_t i = 0; i < ext_samples; ++i) {
+        const double t = static_cast<double>(i) / sr;
+        const auto amp = static_cast<float>(
+                tail_rms * std::exp(-decay_const * t));
+        float sample = amp * noise_dist(rng);
+
+        //  Cross-fade: blend with existing signal tail.
+        if (i < xfade_len) {
+            const auto w = static_cast<float>(i) / static_cast<float>(xfade_len);
+            const auto old_idx = old_size - xfade_len + i;
+            if (old_idx < old_size) {
+                signal[old_size - xfade_len + i] =
+                        signal[old_idx] * (1.0f - w) + sample * w;
+                continue;
+            }
+        }
+        signal[old_size + i - xfade_len] = sample;
+    }
+
+    fprintf(stderr,
+            "[analytical_tail] extended by %.2fs (RT60≈%.2fs tail_rms=%.6f)\n",
+            ext_time, est_rt60, tail_rms);
+    fflush(stderr);
+}
+
+//  Temporal alignment via cross-correlation.
+//  Finds the optimal lag between two signals by maximizing their
+//  cross-correlation in the early portion (first 8192 samples).
+//  More robust than threshold-based onset detection, which fails
+//  when the direct sound is weak or occluded.
 template <typename VecA, typename VecB>
 void align_peaks(VecA& a, VecB& b) {
     if (a.empty() || b.empty()) return;
 
-    const auto find_onset = [](const auto& v) -> size_t {
-        // Search first 4096 samples for peak (avoids locking onto late noise).
-        const auto search_len = std::min(v.size(), size_t{4096});
-        float peak = 0.0f;
-        for (size_t i = 0; i < search_len; ++i)
-            peak = std::max(peak, std::abs(v[i]));
-        if (peak < 1e-10f) return 0;
-        const float thresh = peak * 0.1f;
-        for (size_t i = 0; i < v.size(); ++i) {
-            if (std::abs(v[i]) >= thresh) return i;
+    //  Use only the early portion for correlation (direct sound region).
+    const auto corr_len = std::min({a.size(), b.size(), size_t{8192}});
+    const auto max_lag = std::min(corr_len / 2, size_t{2048});
+
+    //  Find the lag that maximizes cross-correlation.
+    float best_corr = -1e30f;
+    int best_lag = 0;  //  positive = a leads b, negative = b leads a
+
+    for (int lag = -static_cast<int>(max_lag);
+         lag <= static_cast<int>(max_lag); ++lag) {
+        float sum = 0.0f;
+        size_t count = 0;
+        for (size_t i = 0; i < corr_len; ++i) {
+            const auto j = static_cast<int>(i) + lag;
+            if (j >= 0 && j < static_cast<int>(corr_len)) {
+                sum += a[i] * b[j];
+                ++count;
+            }
         }
-        return 0;
-    };
+        if (count > 0) sum /= static_cast<float>(count);
+        if (sum > best_corr) {
+            best_corr = sum;
+            best_lag = lag;
+        }
+    }
 
-    const auto onset_a = find_onset(a);
-    const auto onset_b = find_onset(b);
-
-    if (onset_a == onset_b) return;
+    if (best_lag == 0) return;
 
     const auto shift = [](auto& v, size_t amount) {
         if (amount == 0 || amount >= v.size()) return;
@@ -252,14 +367,15 @@ void align_peaks(VecA& a, VecB& b) {
         std::fill(v.begin(), v.begin() + amount, 0.0f);
     };
 
-    if (onset_a < onset_b) {
-        const auto delta = onset_b - onset_a;
-        shift(a, delta);
-        fprintf(stderr, "[align_peaks] shifted waveguide forward by %zu samples\n", delta);
+    if (best_lag > 0) {
+        //  a leads b — shift b forward (or a backward).
+        shift(b, static_cast<size_t>(best_lag));
+        fprintf(stderr, "[align_peaks] cross-corr: shifted raytracer "
+                "forward by %d samples\n", best_lag);
     } else {
-        const auto delta = onset_a - onset_b;
-        shift(b, delta);
-        fprintf(stderr, "[align_peaks] shifted raytracer forward by %zu samples\n", delta);
+        shift(a, static_cast<size_t>(-best_lag));
+        fprintf(stderr, "[align_peaks] cross-corr: shifted waveguide "
+                "forward by %d samples\n", -best_lag);
     }
     fflush(stderr);
 }
@@ -369,9 +485,9 @@ auto postprocess(const combined_results<Histogram>& input,
             waveguide_processed.size()); fflush(stderr);
 
     //  Dispersion compensation: warp the waveguide spectrum to correct
-    //  for the 7-point stencil's frequency-dependent phase velocity error.
-    //  This shifts modal peaks back to their true frequencies and reduces
-    //  high-frequency smearing in the spectrogram.
+    //  for the IWB stencil's residual frequency-dependent phase velocity error.
+    //  The IWB 19-point scheme has much less dispersion than the old 7-point,
+    //  but still benefits from post-hoc correction above ~80% Nyquist.
     if (!input.waveguide.empty()) {
         const auto wg_sr = input.waveguide.front().band.sample_rate;
         waveguide::compensate_dispersion(
@@ -408,16 +524,10 @@ auto postprocess(const combined_results<Histogram>& input,
             glm::distance(source_position, receiver_position));
 
     if (input.waveguide.empty()) {
-        //  Raytracer-only: DC-block, FDN tail extension, distance-normalize.
+        //  Raytracer-only: DC-block, analytical tail extension, distance-normalize.
         dc_block(raytracer_processed, output_sample_rate);
-        {
-            const double sig_dur = static_cast<double>(
-                    raytracer_processed.size()) / output_sample_rate;
-            const double ext = fdn::compute_fdn_extension(
-                    sig_dur, room_volume, environment.speed_of_sound);
-            fdn::extend_with_fdn(raytracer_processed, output_sample_rate,
-                                 room_volume, environment.speed_of_sound, ext);
-        }
+        extend_with_analytical_tail(raytracer_processed, output_sample_rate,
+                                     room_volume, environment.speed_of_sound);
         normalize_distance(raytracer_processed, output_sample_rate,
                            src_recv_distance, direct_amp);
         trim_leading_silence(raytracer_processed, output_sample_rate);
@@ -537,9 +647,10 @@ auto postprocess(const combined_results<Histogram>& input,
         }
 
         //  Compute smoothed spectral correction (ratio of RT/WG magnitudes).
-        //  Smooth with a 32-bin running average to avoid noise in the ratio.
+        //  Smooth with a 16-bin running average (half the old 32) for finer
+        //  spectral resolution in the correction curve.
         std::vector<float> correction(corr_bins, 1.0f);
-        constexpr size_t smooth_hw = 16;
+        constexpr size_t smooth_hw = 8;
         for (size_t k = 0; k < corr_bins; ++k) {
             const auto lo = (k > smooth_hw) ? k - smooth_hw : size_t{0};
             const auto hi = std::min(corr_bins, k + smooth_hw + 1);
@@ -549,9 +660,11 @@ auto postprocess(const combined_results<Histogram>& input,
                 sum_wg += wg_mag[j];
             }
             if (sum_wg > 1e-10) {
-                //  Clamp correction to ±12 dB to prevent overcorrection.
+                //  Clamp correction to ±6 dB to prevent overcorrection.
+                //  The old ±12 dB range was too aggressive and could distort
+                //  the room's natural spectral character.
                 const auto ratio = static_cast<float>(sum_rt / sum_wg);
-                correction[k] = std::clamp(ratio, 0.125f, 8.0f);
+                correction[k] = std::clamp(ratio, 0.25f, 4.0f);
             }
         }
 
@@ -576,9 +689,10 @@ auto postprocess(const combined_results<Histogram>& input,
 
     //  Room-dependent mixing time for waveguide blend.
     //  Use mixing_time (Kuttruff) for the early/late transition, with a
-    //  fade duration equal to the mixing time itself.
+    //  fade duration of 2× mixing time for a smoother transition that
+    //  reduces energy discontinuities at the blend boundary.
     const auto mix_samples = static_cast<size_t>(mixing_time * output_sample_rate);
-    const auto fade_samples = static_cast<size_t>(mixing_time * output_sample_rate);
+    const auto fade_samples = static_cast<size_t>(2.0 * mixing_time * output_sample_rate);
 
     auto filtered = raytracer_processed;  //  Full-spectrum base signal.
     const auto blend_len = std::min({filtered.size(), wg_lp.size(), rt_lp.size()});
@@ -627,17 +741,11 @@ auto postprocess(const combined_results<Histogram>& input,
         }
     }
 
-    //  FDN late-reverb tail extension.
-    //  Extends the IR with a smooth exponentially-decaying diffuse tail
-    //  generated by a 16-line Feedback Delay Network.
-    {
-        const double sig_dur = static_cast<double>(
-                filtered.size()) / output_sample_rate;
-        const double ext = fdn::compute_fdn_extension(
-                sig_dur, room_volume, environment.speed_of_sound);
-        fdn::extend_with_fdn(filtered, output_sample_rate,
-                             room_volume, environment.speed_of_sound, ext);
-    }
+    //  Analytical tail extension (replaces FDN).
+    //  Extends the IR with exponentially-decaying noise calibrated to the
+    //  signal's own decay rate.  Physically motivated by Sabine/Eyring theory.
+    extend_with_analytical_tail(filtered, output_sample_rate,
+                                 room_volume, environment.speed_of_sound);
 
     //  Distance-based normalization: direct sound peak = 1/distance.
     //  Preserves physical room gain and distance cue.

@@ -157,27 +157,22 @@ mesh compute_mesh(
                     end(voxelised.get_scene_data().get_surfaces()),
                     [&](const auto& surface) -> coefficients_canonical {
                         try {
-                            //  Clamp absorption to a minimum of 0.05 per band.
-                            //  Very low absorption (e.g. glass, α ≈ 0.018)
-                            //  produces reflectance ≈ 0.991 → IIR filter poles
-                            //  at |z| ≈ 0.999, which accumulate numerical error
-                            //  over thousands of time steps and diverge to inf.
-                            //  A 5% floor is standard practice in commercial
-                            //  room-acoustics software (Odeon, CATT-Acoustic).
-                            constexpr float min_absorption = 0.05f;
-                            core::bands_type clamped_abs;
-                            for (int i = 0; i < core::simulation_bands; ++i) {
-                                clamped_abs.s[i] = std::max(
-                                        surface.absorption.s[i], min_absorption);
-                            }
+                            //  No absorption floor — use the true material
+                            //  absorption for accurate RT60 modeling of
+                            //  highly reflective surfaces (glass, marble, etc.).
+                            //  Stability is handled by the filter design:
+                            //  if yulewalk produces unstable poles, we fall
+                            //  back to a flat reflectance coefficient.
                             return to_impedance_coefficients(
                                     compute_reflectance_filter_coefficients(
-                                            clamped_abs.s,
+                                            surface.absorption.s,
                                             1 / config::time_step(speed_of_sound,
                                                                   mesh_spacing)));
                         } catch (const std::exception& e) {
-                            //  Filter design failed (extreme spectral shape).
-                            //  Fall back to flat coefficient using mean absorption.
+                            //  Filter design failed (extreme spectral shape
+                            //  or near-unity reflectance).
+                            //  Fall back to flat reflectance at the mean
+                            //  absorption — always stable.
                             fprintf(stderr,
                                     "[mesh] WARNING: filter design failed (%s), "
                                     "using mean absorption fallback\n",
@@ -188,6 +183,10 @@ mesh compute_mesh(
                                 mean_abs += surface.absorption.s[i];
                             }
                             mean_abs /= core::simulation_bands;
+                            //  Enforce a tiny minimum (0.1%) only for the
+                            //  flat fallback to prevent truly zero absorption
+                            //  which would cause infinite energy accumulation.
+                            mean_abs = std::max(mean_abs, 0.001);
                             return to_flat_coefficients(mean_abs);
                         }
                     }),
