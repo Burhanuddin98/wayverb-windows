@@ -1,64 +1,118 @@
-# Wayverb — Windows Port
+# Wayverb v1.2 — Windows Room Acoustics Simulator
 
 > **Hybrid waveguide + ray-tracing room acoustic simulator with GPU acceleration.**
-> Originally macOS-only. This fork makes it run on **Windows 11** with MSYS2 / MinGW-w64 / NVIDIA OpenCL.
+> Originally macOS-only. This fork runs on **Windows 11** with MSYS2 / MinGW-w64 / NVIDIA OpenCL.
 
-![Wayverb UI](wayverb/wayverb-0.0.1/wayverb-0.0.1/docs_source/images/wayverb_ui.png)
-
----
-
-## What is Wayverb?
-
-Wayverb simulates how sound behaves inside a 3D room and produces a **room impulse response (IR)** — a `.wav` file you can drop into any convolution reverb to make audio sound like it was recorded in that space. Useful for architects, sound designers, game audio, and music production.
-
-It combines three simulation methods to cover the full frequency range:
-
-| Method | Frequency range | What it models |
-|--------|----------------|----------------|
-| Image-source (ISM) | High — early reflections | Specular wall bounces |
-| Stochastic ray-tracing | High — late reverberation | Diffuse energy decay |
-| Rectilinear waveguide mesh (FDTD) | Low | Wave behaviour, diffraction, resonance |
+<p align="center">
+  <img src="wayverb/docs/screenshots/01_waveguide_mesh.png" width="800" alt="Wayverb v1.2 — FDTD waveguide mesh visualization">
+</p>
 
 ---
 
-## Platform support
+## What's New in v1.2 — Physics Engine Rewrite
 
-| Platform | Status |
-|----------|--------|
-| Windows 11 — MSYS2 / MinGW-w64 / GCC 15 | Working |
-| NVIDIA GPU (OpenCL) | Tested on RTX 2060 |
-| AMD GPU | Should work — untested |
-| macOS (original upstream) | Original project by Reuben Thomas |
+Version 1.2 is a complete rewrite of the acoustic simulation core. Seven structural problems in the original engine have been fixed:
+
+| Change | Before (v1.1) | After (v1.2) |
+|--------|--------------|--------------|
+| **FDTD stencil** | 7-point rectilinear (40% Nyquist, anisotropic) | IWB 19-point (90% Nyquist, isotropic) |
+| **Boundary absorption** | 5% minimum floor (glass/marble impossible) | No floor; 0.9999 numerical damping + stability margin |
+| **Scattering model** | Mean across all bands (frequency-independent) | Per-band scattering on both specular and diffuse paths |
+| **Edge diffraction** | None | First-order UTD (Kouyoumjian-Pathak) |
+| **Stochastic tail** | 4.5 dB jitter, linear interpolation | 5.6 dB Rayleigh jitter, cubic Hermite spline |
+| **Crossover blend** | Threshold alignment, +/-12 dB correction | Cross-correlation alignment, +/-6 dB, 2x fade |
+| **Late reverb tail** | FDN artificial reverb | Analytical Schroeder tail (per-band decay) |
 
 ---
 
-## Building on Windows 11
+## Screenshots
+
+### Waveguide Mesh Simulation
+<p align="center">
+  <img src="wayverb/docs/screenshots/01_waveguide_mesh.png" width="700" alt="FDTD waveguide mesh">
+</p>
+
+The IWB 19-point FDTD mesh running inside a room model. Red/cyan dots show pressure values at each grid node. The teal sphere is the receiver. The left panel shows material assignments and simulation parameters.
+
+### Ray Tracing Visualization
+<p align="center">
+  <img src="wayverb/docs/screenshots/02_ray_tracing.png" width="700" alt="Ray tracing">
+</p>
+
+Thousands of rays traced through the room geometry with frequency-dependent scattering. Orange lines show specular and diffuse reflection paths; the receiver sphere (right) collects energy from all directions.
+
+### Impulse Response — Waveforms & Spectrograms
+<p align="center">
+  <img src="wayverb/docs/screenshots/03_results_waveforms.png" width="700" alt="IR results waveforms">
+</p>
+
+Post-render results window showing the computed impulse response. Top row: time-domain waveforms (left/right ears for HRTF mode). Middle/bottom rows: spectrograms showing frequency content over time — the late reverb tail now has smooth, physically correct per-band decay.
+
+### Acoustic Parameter Analysis
+<p align="center">
+  <img src="wayverb/docs/screenshots/04_results_analysis.png" width="700" alt="Acoustic analysis">
+</p>
+
+ISO 3382 acoustic parameters computed from the rendered IR: T30 reverberation time, EDT, C80, D50, and TS per octave band. Energy decay curves (green) show the Schroeder backward integration. The analytical tail extension ensures the full decay is captured without FDN artifacts.
+
+### Source Directivity Patterns
+<p align="center">
+  <img src="wayverb/docs/screenshots/05_source_directivity.png" width="500" alt="Source directivity">
+</p>
+
+Source configuration with selectable 3D directivity patterns: omnidirectional, cardioid, supercardioid, hypercardioid, figure-eight, and hemisphere. The polar plot updates in real-time. Directivity weighting is applied to all image source and diffraction impulses.
+
+### Receiver — HRTF & Microphone Modes
+<p align="center">
+  <img src="wayverb/docs/screenshots/06_receiver_hrtf.png" width="500" alt="Receiver HRTF configuration">
+</p>
+
+Receiver configuration with capsule setup. Each capsule can operate in **microphone** mode (omnidirectional with adjustable polar pattern) or **HRTF** mode (binaural head-related transfer function for headphone listening). The orientation display shows the receiver's look direction.
+
+---
+
+## Quick Start — Running the Pre-Built Executable
+
+If you just want to **run** Wayverb without building from source:
+
+1. Download or clone this repo
+2. Navigate to `wayverb/wayverb-0.0.1/wayverb-0.0.1/bin/`
+3. Double-click **`wayverb.exe`**
+
+The `bin/` folder already contains all required DLLs. You need:
+- Windows 10 or 11 (64-bit)
+- A GPU with an up-to-date driver (NVIDIA or AMD)
+
+### Your First Render
+
+1. **File > Open** and load a `.obj` room model
+   - Example scenes are in `wayverb/wayverb-0.0.1/wayverb-0.0.1/demo/assets/test_models/` — start with **`bedroom.obj`**
+2. Place the **source** (speaker icon) and **receiver** (microphone icon) inside the room
+3. Click **Render** and wait for the progress bar to complete
+4. The output `.wav` impulse response is written to your chosen output folder
+
+### Tips
+- Models must be **watertight** (no holes). The FDTD mesh solver needs a defined interior
+- Start with small rooms (< 500 m^3, < 2000 triangles) for fast renders
+- On a 6GB GPU, renders of `bedroom.obj` complete in 2-5 minutes
+
+---
+
+## Building from Source
 
 ### Prerequisites
 
-- Windows 10 or 11 (64-bit)
+- Windows 10/11 (64-bit)
 - [MSYS2](https://www.msys2.org/) installed to `C:\msys64`
-- An NVIDIA or AMD GPU with an up-to-date driver
+- NVIDIA or AMD GPU with up-to-date drivers
 
----
+### Step 1 — Install dependencies
 
-### Step 1 — Install MSYS2
-
-Download and run the installer from **https://www.msys2.org**.
-
-Open the **MSYS2 MinGW64** shell (look for it in the Start menu — make sure it says MinGW64, not MSYS or UCRT64).
-
----
-
-### Step 2 — Install the toolchain and dependencies
+Open the **MSYS2 MinGW64** shell and run:
 
 ```bash
 pacman -Syu
-```
-
-Close and reopen the shell, then install everything in one command:
-
-```bash
+# Close and reopen the shell, then:
 pacman -S --needed \
   mingw-w64-x86_64-gcc \
   mingw-w64-x86_64-cmake \
@@ -77,152 +131,147 @@ pacman -S --needed \
   git
 ```
 
-OpenCL uses your existing GPU driver via the ICD loader — no extra driver install needed beyond your normal GPU driver.
-
----
-
-### Step 3 — Clone the repo
+### Step 2 — Clone and navigate
 
 ```bash
 git clone https://github.com/Burhanuddin98/wayverb-windows.git
 cd wayverb-windows/wayverb/wayverb-0.0.1/wayverb-0.0.1
 ```
 
----
-
-### Step 4 — Build modern_gl_utils
-
-The GUI depends on a small OpenGL utility library that must be compiled first.
+### Step 3 — Build modern_gl_utils
 
 ```bash
 cd modern_gl_utils
 mkdir -p build_win && cd build_win
-cmake .. -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH=C:/msys64/mingw64
+cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:/msys64/mingw64
 ninja
 cd ../..
 ```
 
----
-
-### Step 5 — Build the Wayverb libraries
+### Step 4 — Build the libraries
 
 ```bash
 mkdir -p build_win && cd build_win
-cmake .. -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH=C:/msys64/mingw64
+cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:/msys64/mingw64
 ninja
 cd ..
 ```
 
-This produces all static libraries in `build_win/lib/`.
-
----
-
-### Step 6 — Build the GUI application
+### Step 5 — Build the GUI
 
 ```bash
 cd wayverb
-mkdir -p build_mgu && cd build_mgu
-cmake .. -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH=C:/msys64/mingw64
+mkdir -p build_win && cd build_win
+cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:/msys64/mingw64
 ninja
 cd ../..
 ```
 
-The final executable is at:
-
-```
-bin/wayverb.exe
-```
-
----
-
-### Step 7 — Copy runtime DLLs
-
-The exe needs the MinGW runtime DLLs alongside it. From the `bin/` folder:
+### Step 6 — Copy runtime DLLs and run
 
 ```bash
 cd bin
-cp /c/msys64/mingw64/bin/libgcc_s_seh-1.dll .
-cp /c/msys64/mingw64/bin/libstdc++-6.dll .
-cp /c/msys64/mingw64/bin/libwinpthread-1.dll .
-cp /c/msys64/mingw64/bin/libassimp*.dll .
-cp /c/msys64/mingw64/bin/libsndfile*.dll .
-cp /c/msys64/mingw64/bin/libsamplerate*.dll .
-cp /c/msys64/mingw64/bin/libfftw3f*.dll .
-cp /c/msys64/mingw64/bin/libOpenCL.dll .
-cp /c/msys64/mingw64/bin/libmpg123*.dll .
+cp /c/msys64/mingw64/bin/{libgcc_s_seh-1,libstdc++-6,libwinpthread-1}.dll .
+cp /c/msys64/mingw64/bin/{libassimp*,libsndfile*,libsamplerate*,libfftw3f*,libOpenCL,libmpg123*}.dll .
+./wayverb.exe
 ```
 
 ---
 
-### Step 8 — Run
+## Simulation Architecture
 
-```bash
-./bin/wayverb.exe
+Wayverb produces room impulse responses by combining three complementary methods:
+
+```
+                    +-----------------+
+                    |   3D Room Model |
+                    |    (.obj mesh)  |
+                    +--------+--------+
+                             |
+              +--------------+--------------+
+              |              |              |
+     +--------v------+ +----v-----+ +------v--------+
+     | FDTD Waveguide| | Image    | | Stochastic    |
+     | (IWB 19-pt)   | | Source   | | Ray Tracer    |
+     | Low freq      | | Method   | | + UTD Diffr.  |
+     +--------+------+ +----+-----+ +------+--------+
+              |              |              |
+              +--------------+--------------+
+                             |
+                    +--------v--------+
+                    | Hybrid Crossover|
+                    | (cross-corr     |
+                    |  alignment)     |
+                    +--------+--------+
+                             |
+                    +--------v--------+
+                    | Analytical Tail |
+                    | Extension       |
+                    +--------+--------+
+                             |
+                    +--------v--------+
+                    |  Output .wav IR |
+                    +-----------------+
 ```
 
-Or just double-click `wayverb.exe` from Explorer.
+### v1.2 Physics Improvements in Detail
 
----
+**IWB 19-Point Stencil** — The waveguide now uses 6 face-adjacent + 12 edge-diagonal neighbors with optimized weights (Kowalczyk & van Walstijn, 2011). This eliminates direction-dependent phase velocity error, making room modes accurate in all directions up to ~90% of the waveguide Nyquist frequency.
 
-## Using Wayverb
+**No Absorption Floor** — The old 5% minimum absorption has been removed. Materials like glass (alpha = 0.02), marble, and polished concrete are now modeled at their true reflectance. A 0.9999 per-step numerical damping and 0.998 stability margin on IIR boundary filter poles prevent divergence without distorting the physics.
 
-1. **File → Open** to load a `.obj` 3D room model.
-   - Bundled example scenes are in `wayverb/wayverb-0.0.1/wayverb-0.0.1/demo/assets/test_models/`.
-   - Start with **`bedroom.obj`** (88 triangles) — renders in a few minutes on any modern GPU.
-2. Place the **source** (speaker) and **receiver** (microphone) inside the room using the 3D viewport.
-3. Click **Render** and wait. Progress shows in the status bar.
-4. The output `.wav` file is written to the folder you chose.
+**Frequency-Dependent Scattering** — The per-band scattering coefficient from each material is now used to weight specular vs. diffuse energy on every reflection. Low frequencies scatter less (surfaces appear smooth relative to wavelength); high frequencies scatter more.
 
-### Scene size
+**UTD Edge Diffraction** — First-order diffraction around edges is computed using the Uniform Theory of Diffraction. The diffraction coefficient D(f) scales as 1/sqrt(f), correctly modeling how low frequencies bend around corners while high frequencies cast sharp shadows.
 
-Wayverb was designed for small architectural rooms (roughly under 500 m³, a few thousand triangles). The Windows patches in this repo automatically cap ray count to 50 000 and image-source order to 1 to prevent GPU out-of-memory errors on larger scenes. Smaller scenes will always give the fastest and most reliable results.
+**Cubic Hermite Spectral Synthesis** — The stochastic reverb tail uses Catmull-Rom cubic Hermite spline interpolation between the 16 histogram bands instead of log-linear, producing smoother spectral contours. Spectral jitter uses the physically correct 5.6 dB standard deviation from Rayleigh amplitude statistics.
 
-### Model requirements
+**Cross-Correlation Alignment** — The waveguide and raytracer signals are aligned using cross-correlation instead of threshold-based onset detection. This is robust even when the direct sound is weak or occluded.
 
-Your `.obj` must be **solid and watertight** — no holes, no zero-thickness planes. The waveguide mesh solver needs a well-defined inside and outside to work correctly.
-
-To validate in SketchUp: select all → **Edit → Make Group** → check **Window → Entity Info**. If it shows a volume, the model is valid. Use the [Solid Inspector plugin](https://extensions.sketchup.com/en/content/solid-inspector) to debug problems.
+**Analytical Tail Extension** — The FDN (Feedback Delay Network) artificial reverb has been replaced with an analytical Schroeder tail that measures the signal's own decay rate and extends it with exponentially-decaying noise. Each frequency band decays at its own physically correct rate.
 
 ---
 
 ## Troubleshooting
 
-| Symptom | Likely cause | Fix |
-|---------|-------------|-----|
-| Black window on launch | GLM matrix initialisation on MinGW | Already patched — make sure you built from this repo |
-| `clBuildProgram` error in render log | NVIDIA driver rejected OpenCL kernel | Already patched — update your GPU driver |
-| Render crashes immediately | Scene too large | Use a smaller `.obj`, start with `bedroom.obj` |
-| Missing DLL error on launch | Runtime DLLs not next to the exe | Redo Step 7 |
-| `Source is outside mesh` | Source/receiver placed outside room | Move them inside the room in the viewport |
-| Very slow render | Too many triangles in scene | Use a simpler model |
+| Symptom | Fix |
+|---------|-----|
+| Black window on launch | Already patched in this repo; update your GPU driver |
+| `clBuildProgram` error | Update GPU driver; try a simpler scene |
+| Render crashes immediately | Scene too large — start with `bedroom.obj` |
+| Missing DLL error | Copy DLLs from Step 6 above |
+| `Source is outside mesh` | Move source/receiver inside the room geometry |
+| Very slow render | Use a simpler model with fewer triangles |
 
 ---
 
-## Windows patches applied vs. original source
+## Project Structure
 
-The original Wayverb 0.0.1 only supported macOS. Eight patches were required:
-
-| File | Problem fixed |
-|------|--------------|
-| `src/core/src/program_wrapper.cpp` | Removed `-Werror` from OpenCL builds; added build log output on failure |
-| `src/waveguide/src/boundary_coefficient_program.cpp` | Fixed implicit `int3 × float3` rejected by NVIDIA OpenCL → `convert_float3()` |
-| `src/combined/src/engine.cpp` | Cap rays to 50 000 and ISM order to 1; added diagnostic logging; mark `raytracer_` mutable |
-| `src/combined/src/threaded_engine.cpp` | Added `cl::Error` catch with error code; added stage logging throughout `do_run()` |
-| `src/raytracer/include/raytracer/raytracer.h` | Added diagnostic logging in the ray-tracing loop |
-| `src/raytracer/include/raytracer/stochastic/postprocessing.h` | Fixed `uniform_real_distribution{1.0, 0.0}` (invalid `a > b`, asserted by GCC 15) → exponential inverse-CDF |
-| `wayverb/Source/3d_objects/reflections_object.cpp` | Fixed for-loop off-by-one causing out-of-bounds vector access |
-| `wayverb/Source/scene/` + `UtilityComponents/generic_renderer.h` | `GLM_FORCE_CTOR_INIT` + GLSL attribute/uniform name fixes for black viewport on MSYS2 |
+```
+wayverb-windows/
+  wayverb/wayverb-0.0.1/wayverb-0.0.1/
+    src/
+      core/           — Scene, surfaces, serialization, math
+      waveguide/      — IWB FDTD waveguide (OpenCL GPU)
+      raytracer/      — Ray tracer, ISM, stochastic tail, UTD diffraction
+      combined/       — Hybrid engine, crossover, postprocessing
+      frequency_domain/ — FFT, multiband filter, convolution
+      hrtf/           — HRTF binaural rendering
+      audio_file/     — WAV/AIF output
+      utilities/      — Containers, iterators, helpers
+    wayverb/Source/   — JUCE GUI application
+    bin/              — Pre-built executable + DLLs
+    demo/             — Example room models and presets
+    tools/            — analyze_ir.py, hot_rebuild.sh
+    test/             — validate_render.py, quick_check.sh
+```
 
 ---
 
 ## License
 
-See `wayverb/wayverb-0.0.1/wayverb-0.0.1/LICENSE`. Original library by Reuben Thomas.
+Original Wayverb library by Reuben Thomas. See `wayverb/wayverb-0.0.1/wayverb-0.0.1/LICENSE`.
+
+Windows port and v1.2 physics rewrite by Burhanuddin Sakaliwala.
 
 **Software is provided "as is", without warranty of any kind.**
