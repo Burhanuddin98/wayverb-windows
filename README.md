@@ -1,7 +1,9 @@
 # Wayverb v1.2 — Windows Room Acoustics Simulator
 
 > **Hybrid waveguide + ray-tracing room acoustic simulator with GPU acceleration.**
-> Originally macOS-only. This fork runs on **Windows 11** with MSYS2 / MinGW-w64 / NVIDIA OpenCL.
+> Based on [Wayverb by Reuben Thomas](https://github.com/reuk/wayverb) (originally macOS-only). This fork ports it to **Windows 11** and rewrites the physics engine.
+>
+> **[v1.0](https://github.com/Burhanuddin98/wayverb-windows/tree/v1.0)** — original Windows port | **v1.2** (this branch) — rewritten physics engine
 
 <p align="center">
   <img src="wayverb/docs/screenshots/01_waveguide_mesh.png" width="800" alt="Wayverb v1.2 — FDTD waveguide mesh visualization">
