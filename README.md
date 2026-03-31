@@ -184,36 +184,26 @@ cp /c/msys64/mingw64/bin/{libassimp*,libsndfile*,libsamplerate*,libfftw3f*,libOp
 
 Wayverb produces room impulse responses by combining three complementary methods:
 
-```
-                    +-----------------+
-                    |   3D Room Model |
-                    |    (.obj mesh)  |
-                    +--------+--------+
-                             |
-              +--------------+--------------+
-              |              |              |
-     +--------v------+ +----v-----+ +------v--------+
-     | FDTD Waveguide| | Image    | | Stochastic    |
-     | (IWB 19-pt)   | | Source   | | Ray Tracer    |
-     | Low freq      | | Method   | | + UTD Diffr.  |
-     +--------+------+ +----+-----+ +------+--------+
-              |              |              |
-              +--------------+--------------+
-                             |
-                    +--------v--------+
-                    | Hybrid Crossover|
-                    | (cross-corr     |
-                    |  alignment)     |
-                    +--------+--------+
-                             |
-                    +--------v--------+
-                    | Analytical Tail |
-                    | Extension       |
-                    +--------+--------+
-                             |
-                    +--------v--------+
-                    |  Output .wav IR |
-                    +-----------------+
+```mermaid
+flowchart TD
+    A["🏠 3D Room Model\n(.obj mesh)"] --> B["FDTD Waveguide\n(IWB 19-point)\nLow frequencies"]
+    A --> C["Image Source Method\nEarly reflections"]
+    A --> D["Stochastic Ray Tracer\n+ UTD Diffraction\nLate reverberation"]
+
+    B --> E["Hybrid Crossover\n(cross-correlation alignment)"]
+    C --> E
+    D --> E
+
+    E --> F["Analytical Tail Extension\n(per-band Schroeder decay)"]
+    F --> G["📄 Output .wav\nImpulse Response"]
+
+    style A fill:#4a0e8f,stroke:#7c3aed,color:#fff
+    style B fill:#1e1b4b,stroke:#7c3aed,color:#fff
+    style C fill:#1e1b4b,stroke:#7c3aed,color:#fff
+    style D fill:#1e1b4b,stroke:#7c3aed,color:#fff
+    style E fill:#2e1065,stroke:#a78bfa,color:#fff
+    style F fill:#2e1065,stroke:#a78bfa,color:#fff
+    style G fill:#4a0e8f,stroke:#7c3aed,color:#fff
 ```
 
 ### v1.2 Physics Improvements in Detail
