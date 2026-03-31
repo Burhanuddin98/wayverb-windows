@@ -6,7 +6,7 @@
 > **[v1.0](https://github.com/Burhanuddin98/wayverb-windows/tree/v1.0)** — original Windows port | **v1.2** (this branch) — rewritten physics engine
 
 <p align="center">
-  <img src="wayverb/docs/screenshots/01_waveguide_mesh.png" width="800" alt="Wayverb v1.2 — FDTD waveguide mesh visualization">
+  <img src="wayverb/docs/screenshots/00_logo.png" width="200" alt="Wayverb logo">
 </p>
 
 ---
