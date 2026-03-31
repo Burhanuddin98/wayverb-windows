@@ -186,7 +186,7 @@ Wayverb produces room impulse responses by combining three complementary methods
 
 ```mermaid
 flowchart TD
-    A["🏠 3D Room Model\n(.obj mesh)"] --> B["FDTD Waveguide\n(IWB 19-point)\nLow frequencies"]
+    A["3D Room Model\n(.obj mesh)"] --> B["FDTD Waveguide\n(IWB 19-point)\nLow frequencies"]
     A --> C["Image Source Method\nEarly reflections"]
     A --> D["Stochastic Ray Tracer\n+ UTD Diffraction\nLate reverberation"]
 
@@ -195,7 +195,7 @@ flowchart TD
     D --> E
 
     E --> F["Analytical Tail Extension\n(per-band Schroeder decay)"]
-    F --> G["📄 Output .wav\nImpulse Response"]
+    F --> G["Output .wav\nImpulse Response"]
 
     style A fill:#4a0e8f,stroke:#7c3aed,color:#fff
     style B fill:#1e1b4b,stroke:#7c3aed,color:#fff
