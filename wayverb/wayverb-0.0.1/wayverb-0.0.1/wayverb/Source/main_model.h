@@ -48,6 +48,9 @@ public:
 
     bool needs_save() const;
 
+    //  Temp file path used when loading single-file .way format.
+    std::string way_tmp_model_path_;
+
     wayverb::core::generic_scene_data<cl_float3, std::string> get_scene_data()
             const;
 

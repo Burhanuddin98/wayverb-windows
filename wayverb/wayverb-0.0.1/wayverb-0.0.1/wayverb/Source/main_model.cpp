@@ -26,6 +26,7 @@
 #include <map>
 #include <queue>
 #include <set>
+#include <sstream>
 
 // Diagnostic log file — absolute path so it's always findable.
 static std::ofstream& diag_log() {
@@ -35,8 +36,34 @@ static std::ofstream& diag_log() {
 }
 
 project::project(const std::string& fpath)
-        : scene_data_{is_project_file(fpath) ? compute_model_path(fpath)
-                                             : fpath}
+        : scene_data_{[&]() -> std::string {
+            if (!is_project_file(fpath)) return fpath;
+            //  Check if it's a single-file .way (starts with "WAY1") or
+            //  an old-style directory.
+            if (juce::File(fpath).isDirectory()) {
+                return compute_model_path(fpath);
+            }
+            //  Single-file .way: extract model to temp file for Assimp.
+            std::ifstream in(fpath, std::ios::binary);
+            char magic[4] = {};
+            in.read(magic, 4);
+            if (std::string(magic, 4) == "WAY1") {
+                uint32_t model_size = 0, config_size = 0;
+                in.read(reinterpret_cast<char*>(&model_size), 4);
+                in.read(reinterpret_cast<char*>(&config_size), 4);
+                std::vector<char> model_data(model_size);
+                in.read(model_data.data(), model_size);
+                //  Write model to temp file.
+                auto tmp = juce::File::getSpecialLocation(
+                        juce::File::tempDirectory)
+                        .getChildFile("wayverb_load_tmp.obj");
+                tmp.replaceWithData(model_data.data(), model_size);
+                way_tmp_model_path_ = tmp.getFullPathName().toStdString();
+                return way_tmp_model_path_;
+            }
+            //  Fallback: maybe old folder format with wrong detection.
+            return compute_model_path(fpath);
+        }()}
         , needs_save_{!is_project_file(fpath)} {
 
     diag_log() << "[project] loading: " << fpath << "\n";
@@ -123,13 +150,31 @@ project::project(const std::string& fpath)
                << "  vertices: " << raw_verts.size() << "\n";
     diag_log().flush();
 
-    //  If there's a config file, we'll just overwrite the state we just set,
-    //  but that's probably fine.
+    //  Load config from project file.
     if (is_project_file(fpath)) {
-        const auto config_file = project::compute_config_path(fpath);
-        std::ifstream stream{config_file};
-        cereal::JSONInputArchive archive{stream};
-        archive(persistent);
+        if (juce::File(fpath).isDirectory()) {
+            //  Old folder format.
+            const auto config_file = project::compute_config_path(fpath);
+            std::ifstream stream{config_file};
+            cereal::JSONInputArchive archive{stream};
+            archive(persistent);
+        } else {
+            //  Single-file .way format: read config from after the model data.
+            std::ifstream in(fpath, std::ios::binary);
+            char magic[4];
+            in.read(magic, 4);
+            if (std::string(magic, 4) == "WAY1") {
+                uint32_t model_size = 0, config_size = 0;
+                in.read(reinterpret_cast<char*>(&model_size), 4);
+                in.read(reinterpret_cast<char*>(&config_size), 4);
+                in.seekg(12 + model_size);  // skip header + model
+                std::string config_json(config_size, '\0');
+                in.read(&config_json[0], config_size);
+                std::istringstream config_ss(config_json);
+                cereal::JSONInputArchive archive{config_ss};
+                archive(persistent);
+            }
+        }
     }
 
     //  Auto-partition if the mesh has very few surface groups.
@@ -281,20 +326,48 @@ std::string project::get_extensions() const {
 
 void project::save_to(const std::string& fpath) {
     if (needs_save_) {
-        //  Create the .way project directory if it doesn't exist.
-        auto dir_result = juce::File(fpath).createDirectory();
-        if (!dir_result.wasOk()) {
+        //  Single-file .way format:
+        //    [4B] "WAY1" magic
+        //    [4B] model_size (uint32 LE)
+        //    [4B] config_size (uint32 LE)
+        //    [model_size bytes] geometry (Assimp export)
+        //    [config_size bytes] config JSON
+
+        //  Write geometry to a temp file, then read it back.
+        auto tmp_dir = juce::File::getSpecialLocation(
+                juce::File::tempDirectory);
+        auto tmp_model = tmp_dir.getChildFile("wayverb_tmp_model.obj");
+        scene_data_.save(tmp_model.getFullPathName().toStdString());
+
+        //  Read model bytes.
+        juce::MemoryBlock model_data;
+        if (!tmp_model.loadFileAsData(model_data)) {
+            throw std::runtime_error("Failed to write temp model file");
+        }
+        tmp_model.deleteFile();
+
+        //  Serialize config to JSON string.
+        std::ostringstream config_ss;
+        { cereal::JSONOutputArchive archive{config_ss}; archive(persistent); }
+        const auto config_str = config_ss.str();
+
+        //  Write the .way file.
+        std::ofstream out(fpath, std::ios::binary);
+        if (!out.is_open()) {
             throw std::runtime_error(
-                    "Cannot create project directory: "
-                    + dir_result.getErrorMessage().toStdString());
+                    "Cannot write to: " + fpath
+                    + "\nMake sure the location is writable.");
         }
 
-        //  write current geometry to file
-        scene_data_.save(project::compute_model_path(fpath));
+        const uint32_t model_size = static_cast<uint32_t>(model_data.getSize());
+        const uint32_t config_size = static_cast<uint32_t>(config_str.size());
 
-        //  write config with all current materials to file
-        std::ofstream stream{project::compute_config_path(fpath)};
-        cereal::JSONOutputArchive{stream}(persistent);
+        out.write("WAY1", 4);
+        out.write(reinterpret_cast<const char*>(&model_size), 4);
+        out.write(reinterpret_cast<const char*>(&config_size), 4);
+        out.write(static_cast<const char*>(model_data.getData()), model_size);
+        out.write(config_str.data(), config_size);
+        out.close();
 
         needs_save_ = false;
     }

@@ -364,21 +364,14 @@ void main_window::save_as() {
 
 std::optional<std::string>
 main_window::browse_for_file_to_save() {
-    FileChooser fc{"Save Location...", File(), project::project_wildcard};
+    FileChooser fc{"Save Project...", File(), project::project_wildcard};
     if (fc.browseForFileToSave(true)) {
-        const auto path = fc.getResult();
-        auto result = path.createDirectory();
-        if (!result.wasOk()) {
-            AlertWindow::showMessageBoxAsync(
-                    AlertWindow::AlertIconType::WarningIcon,
-                    "Cannot Save",
-                    "Failed to create project folder:\n"
-                    + path.getFullPathName() + "\n\n"
-                    + result.getErrorMessage()
-                    + "\n\nTry saving to a different location.");
-            return std::nullopt;
+        auto path = fc.getResult().getFullPathName().toStdString();
+        //  Ensure .way extension.
+        if (path.size() < 4 || path.substr(path.size() - 4) != ".way") {
+            path += ".way";
         }
-        return path.getFullPathName().toStdString();
+        return path;
     }
     return std::nullopt;
 }
