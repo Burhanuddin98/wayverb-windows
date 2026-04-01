@@ -66,8 +66,42 @@ project::project(const std::string& fpath)
             auto tmp = juce::File::getSpecialLocation(
                     juce::File::tempDirectory)
                     .getChildFile("wayverb_load_tmp.obj");
+            auto tmp_mtl = tmp.getSiblingFile("wayverb_load_tmp.mtl");
 
-            if (mag == "WAY2") {
+            if (mag == "WAY3") {
+                //  Compressed with .mtl.
+                uint32_t mcz=0, ccz=0, mtz=0, mo=0, co=0, mto=0;
+                in.read(reinterpret_cast<char*>(&mcz), 4);
+                in.read(reinterpret_cast<char*>(&ccz), 4);
+                in.read(reinterpret_cast<char*>(&mtz), 4);
+                in.read(reinterpret_cast<char*>(&mo), 4);
+                in.read(reinterpret_cast<char*>(&co), 4);
+                in.read(reinterpret_cast<char*>(&mto), 4);
+                if (!in.good() || mo == 0 || mo > 500000000)
+                    throw std::runtime_error("Corrupt .way file");
+                std::vector<uint8_t> model_z(mcz);
+                in.read(reinterpret_cast<char*>(model_z.data()), mcz);
+                std::vector<uint8_t> model_raw(mo);
+                uLongf out_len = mo;
+                if (uncompress(model_raw.data(), &out_len,
+                               model_z.data(), mcz) != Z_OK)
+                    throw std::runtime_error("Corrupt .way: decompress failed");
+                tmp.replaceWithData(model_raw.data(), out_len);
+                //  Skip config_z, read mtl_z
+                in.seekg(28 + mcz + ccz);
+                if (mtz > 0 && mto > 0) {
+                    std::vector<uint8_t> mtl_z(mtz);
+                    in.read(reinterpret_cast<char*>(mtl_z.data()), mtz);
+                    std::vector<uint8_t> mtl_raw(mto);
+                    uLongf ml = mto;
+                    uncompress(mtl_raw.data(), &ml, mtl_z.data(), mtz);
+                    tmp_mtl.replaceWithData(mtl_raw.data(), ml);
+                } else {
+                    tmp_mtl.replaceWithText("# placeholder\n");
+                }
+                way_tmp_model_path_ = tmp.getFullPathName().toStdString();
+                return way_tmp_model_path_;
+            } else if (mag == "WAY2") {
                 //  Compressed format.
                 uint32_t mc = 0, cc = 0, mo = 0, co = 0;
                 in.read(reinterpret_cast<char*>(&mc), 4);
@@ -91,6 +125,9 @@ project::project(const std::string& fpath)
                             + std::to_string(zr) + ")");
                 }
                 tmp.replaceWithData(model_raw.data(), out_len);
+                //  Write empty .mtl so Assimp doesn't crash on mtllib ref.
+                tmp.getSiblingFile("wayverb_load_tmp.mtl")
+                        .replaceWithText("# placeholder\n");
                 way_tmp_model_path_ = tmp.getFullPathName().toStdString();
                 return way_tmp_model_path_;
             } else if (mag == "WAY1") {
@@ -101,6 +138,8 @@ project::project(const std::string& fpath)
                 std::vector<char> model_data(model_size);
                 in.read(model_data.data(), model_size);
                 tmp.replaceWithData(model_data.data(), model_size);
+                tmp.getSiblingFile("wayverb_load_tmp.mtl")
+                        .replaceWithText("# placeholder\n");
                 way_tmp_model_path_ = tmp.getFullPathName().toStdString();
                 return way_tmp_model_path_;
             }
@@ -207,23 +246,38 @@ project::project(const std::string& fpath)
             in.read(magic, 4);
             const std::string mag(magic, 4);
 
-            if (mag == "WAY2") {
+            auto load_config_z = [&](const std::vector<uint8_t>& cz, uint32_t co) {
+                std::vector<uint8_t> raw(co);
+                uLongf ol = co;
+                uncompress(raw.data(), &ol, cz.data(), cz.size());
+                std::string json(reinterpret_cast<char*>(raw.data()), ol);
+                std::istringstream ss(json);
+                cereal::JSONInputArchive archive{ss};
+                archive(persistent);
+            };
+
+            if (mag == "WAY3") {
+                uint32_t mcz=0, ccz=0, mtz=0, mo=0, co=0, mto=0;
+                in.read(reinterpret_cast<char*>(&mcz), 4);
+                in.read(reinterpret_cast<char*>(&ccz), 4);
+                in.read(reinterpret_cast<char*>(&mtz), 4);
+                in.read(reinterpret_cast<char*>(&mo), 4);
+                in.read(reinterpret_cast<char*>(&co), 4);
+                in.read(reinterpret_cast<char*>(&mto), 4);
+                in.seekg(28 + mcz);
+                std::vector<uint8_t> config_z(ccz);
+                in.read(reinterpret_cast<char*>(config_z.data()), ccz);
+                load_config_z(config_z, co);
+            } else if (mag == "WAY2") {
                 uint32_t mc = 0, cc = 0, mo = 0, co = 0;
                 in.read(reinterpret_cast<char*>(&mc), 4);
                 in.read(reinterpret_cast<char*>(&cc), 4);
                 in.read(reinterpret_cast<char*>(&mo), 4);
                 in.read(reinterpret_cast<char*>(&co), 4);
-                in.seekg(20 + mc);  // skip header + compressed model
+                in.seekg(20 + mc);
                 std::vector<uint8_t> config_z(cc);
                 in.read(reinterpret_cast<char*>(config_z.data()), cc);
-                std::vector<uint8_t> config_raw(co);
-                uLongf out_len = co;
-                uncompress(config_raw.data(), &out_len, config_z.data(), cc);
-                std::string config_json(
-                        reinterpret_cast<char*>(config_raw.data()), co);
-                std::istringstream config_ss(config_json);
-                cereal::JSONInputArchive archive{config_ss};
-                archive(persistent);
+                load_config_z(config_z, co);
             } else if (mag == "WAY1") {
                 uint32_t model_size = 0, config_size = 0;
                 in.read(reinterpret_cast<char*>(&model_size), 4);
@@ -400,12 +454,19 @@ void project::save_to(const std::string& fpath) {
         auto tmp_model = tmp_dir.getChildFile("wayverb_tmp_model.obj");
         scene_data_.save(tmp_model.getFullPathName().toStdString());
 
-        //  Read model bytes.
+        //  Read model bytes — also grab the .mtl file that Assimp produces
+        //  alongside the .obj, since the OBJ references it via mtllib.
         juce::MemoryBlock model_data;
         if (!tmp_model.loadFileAsData(model_data)) {
             throw std::runtime_error("Failed to write temp model file");
         }
+        //  Read companion .mtl if it exists.
+        auto tmp_mtl = tmp_dir.getChildFile("wayverb_tmp_model.mtl");
+        juce::MemoryBlock mtl_data;
+        bool has_mtl = tmp_mtl.existsAsFile()
+                    && tmp_mtl.loadFileAsData(mtl_data);
         tmp_model.deleteFile();
+        tmp_mtl.deleteFile();
 
         //  Serialize config to JSON string.
         std::ostringstream config_ss;
@@ -428,28 +489,40 @@ void project::save_to(const std::string& fpath) {
 
         auto model_z = zlib_compress(model_data.getData(), model_data.getSize());
         auto config_z = zlib_compress(config_str.data(), config_str.size());
+        auto mtl_z = has_mtl
+                ? zlib_compress(mtl_data.getData(), mtl_data.getSize())
+                : std::vector<uint8_t>{};
 
-        //  WAY2 format (compressed):
-        //    [4B]  "WAY2" magic
+        //  WAY3 format (compressed, with .mtl):
+        //    [4B]  "WAY3" magic
         //    [4B]  model_compressed_size
         //    [4B]  config_compressed_size
+        //    [4B]  mtl_compressed_size
         //    [4B]  model_original_size
         //    [4B]  config_original_size
-        //    [model_compressed_size B]  zlib-compressed model
-        //    [config_compressed_size B] zlib-compressed config
-        const uint32_t mc = static_cast<uint32_t>(model_z.size());
-        const uint32_t cc = static_cast<uint32_t>(config_z.size());
+        //    [4B]  mtl_original_size
+        //    [model_compressed_size B]  zlib obj
+        //    [config_compressed_size B] zlib json
+        //    [mtl_compressed_size B]    zlib mtl
+        const uint32_t mcz = static_cast<uint32_t>(model_z.size());
+        const uint32_t ccz = static_cast<uint32_t>(config_z.size());
+        const uint32_t mtz = static_cast<uint32_t>(mtl_z.size());
         const uint32_t mo = static_cast<uint32_t>(model_data.getSize());
         const uint32_t co = static_cast<uint32_t>(config_str.size());
+        const uint32_t mto = has_mtl
+                ? static_cast<uint32_t>(mtl_data.getSize()) : 0u;
 
         juce::MemoryBlock way_data;
-        way_data.append("WAY2", 4);
-        way_data.append(&mc, 4);
-        way_data.append(&cc, 4);
+        way_data.append("WAY3", 4);
+        way_data.append(&mcz, 4);
+        way_data.append(&ccz, 4);
+        way_data.append(&mtz, 4);
         way_data.append(&mo, 4);
         way_data.append(&co, 4);
-        way_data.append(model_z.data(), mc);
-        way_data.append(config_z.data(), cc);
+        way_data.append(&mto, 4);
+        way_data.append(model_z.data(), mcz);
+        way_data.append(config_z.data(), ccz);
+        if (mtz > 0) way_data.append(mtl_z.data(), mtz);
 
         //  Write to temp, then move to destination.
         //  This works around Windows Controlled Folder Access which blocks
