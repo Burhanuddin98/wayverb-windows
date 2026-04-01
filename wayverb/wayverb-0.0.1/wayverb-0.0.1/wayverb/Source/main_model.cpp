@@ -41,7 +41,21 @@ project::project(const std::string& fpath)
         : scene_data_{[&]() -> std::string {
             if (!is_project_file(fpath)) return fpath;
             if (juce::File(fpath).isDirectory()) {
-                return compute_model_path(fpath);
+                //  Old folder format — check if model.model exists.
+                auto model_path = compute_model_path(fpath);
+                if (juce::File(model_path).existsAsFile()) {
+                    return model_path;
+                }
+                //  Maybe the folder contains a geometry file.
+                juce::Array<juce::File> inner;
+                juce::File(fpath).findChildFiles(inner,
+                        juce::File::findFiles, false, "*.way;*.obj;*.stl;*.fbx;*.dae");
+                if (!inner.isEmpty()) {
+                    return inner[0].getFullPathName().toStdString();
+                }
+                throw std::runtime_error(
+                        "Project folder does not contain a valid model file: "
+                        + fpath);
             }
             //  Single-file .way: read magic to determine version.
             std::ifstream in(fpath, std::ios::binary);
