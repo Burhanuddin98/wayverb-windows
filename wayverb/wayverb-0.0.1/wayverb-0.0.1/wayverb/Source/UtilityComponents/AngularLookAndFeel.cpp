@@ -52,6 +52,10 @@ AngularLookAndFeel::AngularLookAndFeel() {
     setColour(TooltipWindow::ColourIds::textColourId, Colours::lightgrey);
     setColour(TooltipWindow::ColourIds::outlineColourId, emphasis);
 
+    setColour(PopupMenu::backgroundColourId, Colour(0xff2a2a2a));
+    setColour(PopupMenu::textColourId, Colours::lightgrey);
+    setColour(PopupMenu::highlightedTextColourId, Colours::white);
+
     setUsingNativeAlertWindows(true);
 }
 

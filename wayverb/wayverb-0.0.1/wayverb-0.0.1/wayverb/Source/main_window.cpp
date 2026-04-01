@@ -88,6 +88,10 @@ main_window::main_window(ApplicationCommandTarget& next,
     }
 #endif
 
+#if !JUCE_MAC
+    setMenuBar(&wayverb_application::get_menu_bar_model());
+#endif
+
     auto& command_manager = wayverb_application::get_command_manager();
     command_manager.registerAllCommandsForTarget(this);
     addKeyListener(command_manager.getKeyMappings());
@@ -101,6 +105,9 @@ main_window::main_window(ApplicationCommandTarget& next,
 }
 
 main_window::~main_window() noexcept {
+#if !JUCE_MAC
+    setMenuBar(nullptr);
+#endif
     removeKeyListener(
             wayverb_application::get_command_manager().getKeyMappings());
 }

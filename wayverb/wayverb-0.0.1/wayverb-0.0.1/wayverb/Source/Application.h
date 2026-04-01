@@ -24,6 +24,7 @@ public:
     static StoredSettings& get_app_settings();
     static PropertiesFile& get_global_properties();
     static LookAndFeel& get_look_and_feel();
+    static MenuBarModel& get_menu_bar_model();
     static void register_recent_file(const std::string& file);
 
 private:

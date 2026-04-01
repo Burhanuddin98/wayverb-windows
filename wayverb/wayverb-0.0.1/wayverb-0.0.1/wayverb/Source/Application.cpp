@@ -135,6 +135,7 @@ public:
     }
 
     LookAndFeel& get_look_and_feel() { return look_and_feel_; }
+    MenuBarModel& get_menu_bar_model() { return main_menu_bar_model_; }
 
 private:
     class main_menu_bar_model : public MenuBarModel {
@@ -410,6 +411,11 @@ LookAndFeel& wayverb_application::get_look_and_feel() {
 ApplicationCommandManager& wayverb_application::get_command_manager() {
     jassert(get_app().instance_);
     return get_app().instance_->get_command_manager();
+}
+
+MenuBarModel& wayverb_application::get_menu_bar_model() {
+    jassert(get_app().instance_);
+    return get_app().instance_->get_menu_bar_model();
 }
 
 START_JUCE_APPLICATION(wayverb_application)
