@@ -292,8 +292,7 @@ public:
             o = orientation.get()
         ](auto& receiver) {
             const auto az_el = wayverb::core::compute_azimuth_elevation(
-                    receiver.get_orientation().get_pointing(),
-                    receiver.get_orientation().get_up());
+                    receiver.get_orientation().get_pointing());
             n->set(receiver.get_name());
             p->set(receiver.get_position());
             o->set(az_el);
@@ -313,7 +312,7 @@ public:
 
         orientation->connect_on_change([this](auto&, auto az_el) {
             receiver_.set_orientation(wayverb::core::orientation{
-                    compute_pointing(az_el), compute_up(az_el)});
+                    compute_pointing(az_el)});
             // Also update diagram immediately (before model round-trips back)
             if (on_orientation_updated) on_orientation_updated(az_el);
         });

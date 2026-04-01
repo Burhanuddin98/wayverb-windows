@@ -20,16 +20,13 @@ azimuth_elevation_editor::azimuth_elevation_editor() {
             "azimuth", degrees(-M_PI), degrees(M_PI), 1, " deg");
     auto el = std::make_unique<slider_property>(
             "elevation", degrees(-M_PI / 2), degrees(M_PI / 2), 1, " deg");
-    auto rl = std::make_unique<slider_property>(
-            "roll", degrees(-M_PI), degrees(M_PI), 1, " deg");
 
     const auto callback = [this](auto&, auto) { on_change_(*this, get()); };
 
     az->connect_on_change(callback);
     el->connect_on_change(callback);
-    rl->connect_on_change(callback);
 
-    addProperties({az_ = az.release(), el_ = el.release(), roll_ = rl.release()});
+    addProperties({az_ = az.release(), el_ = el.release()});
 }
 
 azimuth_elevation_editor::on_change::connection
@@ -39,20 +36,18 @@ azimuth_elevation_editor::connect_on_change(on_change::callback_type callback) {
 
 wayverb::core::az_el azimuth_elevation_editor::get() const {
     return wayverb::core::az_el(radians(az_->get()),
-                                radians(el_->get()),
-                                radians(roll_->get()));
+                                radians(el_->get()));
 }
 
 void azimuth_elevation_editor::set(wayverb::core::az_el az_el) {
     az_->set(degrees(az_el.azimuth));
     el_->set(degrees(az_el.elevation));
-    roll_->set(degrees(az_el.roll));
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
 azimuth_elevation_property::azimuth_elevation_property(const String& name)
-        : PropertyComponent{name, 80} {
+        : PropertyComponent{name, 54} {
     editor_.connect_on_change(
             [this](auto&, auto az_el) { on_change_(*this, az_el); });
 

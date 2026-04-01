@@ -193,8 +193,7 @@ public:
             n->set(source.get_name());
             p->set(source.get_position());
             o->set(wayverb::core::compute_azimuth_elevation(
-                    source.get_orientation().get_pointing(),
-                    source.get_orientation().get_up()));
+                    source.get_orientation().get_pointing()));
             d->set(source.get_directivity());
             diagram_.set_pattern(source.get_directivity());
         };
@@ -210,7 +209,7 @@ public:
                 [this](auto&, auto pos) { source_->set_position(pos); });
         orientation->connect_on_change([this](auto&, auto az_el) {
             source_->set_orientation(wayverb::core::orientation{
-                    compute_pointing(az_el), compute_up(az_el)});
+                    compute_pointing(az_el)});
         });
         directivity->connect_on_change(
                 [this](auto pattern) { source_->set_directivity(pattern); });
