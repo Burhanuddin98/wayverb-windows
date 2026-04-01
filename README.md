@@ -1,13 +1,17 @@
 # Wayverb v1.2 — Windows Room Acoustics Simulator
 
+<p align="center">
+  <img src="wayverb/docs/screenshots/00_logo.png" width="200" alt="Wayverb logo">
+</p>
+
+<p align="center">
+  <a href="https://github.com/Burhanuddin98/wayverb-windows/releases/tag/v1.2"><img src="https://img.shields.io/badge/Download-Wayverb%20v1.2%20for%20Windows-7c3aed?style=for-the-badge&logo=windows" alt="Download"></a>
+</p>
+
 > **Hybrid waveguide + ray-tracing room acoustic simulator with GPU acceleration.**
 > Based on [Wayverb by Reuben Thomas](https://github.com/reuk/wayverb) (originally macOS-only). This fork ports it to **Windows 11** and rewrites the physics engine.
 >
 > **[v1.0](https://github.com/Burhanuddin98/wayverb-windows/tree/v1.0)** — original Windows port | **v1.2** (this branch) — rewritten physics engine
-
-<p align="center">
-  <img src="wayverb/docs/screenshots/00_logo.png" width="200" alt="Wayverb logo">
-</p>
 
 ---
 
@@ -73,15 +77,14 @@ Receiver configuration with capsule setup. Each capsule can operate in **microph
 
 ---
 
-## Quick Start — Running the Pre-Built Executable
+## Quick Start — Download and Run
 
-If you just want to **run** Wayverb without building from source:
+**[Download Wayverb v1.2 for Windows (zip)](https://github.com/Burhanuddin98/wayverb-windows/releases/tag/v1.2)** — pre-built binary, no build tools needed.
 
-1. Download or clone this repo
-2. Navigate to `wayverb/wayverb-0.0.1/wayverb-0.0.1/bin/`
-3. Double-click **`wayverb.exe`**
+1. Download and extract `wayverb-v1.2-win64.zip`
+2. Double-click **`wayverb.exe`**
 
-The `bin/` folder already contains all required DLLs. You need:
+Requirements:
 - Windows 10 or 11 (64-bit)
 - A GPU with an up-to-date driver (NVIDIA or AMD)
 
