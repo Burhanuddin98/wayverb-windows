@@ -104,13 +104,7 @@ auto postprocess(const simulation_results<Histogram>& input,
     float direct_dist = 0.0f;
     if (input.direct) {
         const auto& d = *input.direct;
-        //  Use RMS across all frequency bands for the direct sound amplitude.
-        //  Band 0 alone can be wrong if directivity or air absorption
-        //  attenuated some bands differently.
-        float sum_sq = 0.0f;
-        for (int b = 0; b < core::simulation_bands; ++b)
-            sum_sq += d.volume.s[b] * d.volume.s[b];
-        direct_amp = std::sqrt(sum_sq / core::simulation_bands);
+        direct_amp = d.volume.s[0];
         direct_dist = d.distance;
 
         place_direct_spike(signal, output_sample_rate,
