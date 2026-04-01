@@ -364,30 +364,41 @@ void main_window::save_as() {
 
 std::optional<std::string>
 main_window::browse_for_file_to_save() {
-    //  Use browseForFileToSave(false) — no overwrite prompt.
-    //  The 'true' variant triggers Windows Controlled Folder Access checks
-    //  which block saves to Downloads and other "protected" folders even
-    //  when the user has full write permission.
-    FileChooser fc{"Save Project...", File(), project::project_wildcard};
-    if (fc.browseForFileToSave(false)) {
-        auto path = fc.getResult().getFullPathName().toStdString();
-        //  Ensure .way extension.
-        if (path.size() < 4 || path.substr(path.size() - 4) != ".way") {
-            path += ".way";
+    //  Windows Controlled Folder Access blocks the native Save dialog from
+    //  writing to Downloads, Documents, Desktop etc.  Work around this by
+    //  using a folder picker + a text field for the filename.
+    FileChooser fc{"Choose folder for project...", File()};
+    if (!fc.browseForDirectory()) return std::nullopt;
+
+    auto folder = fc.getResult();
+
+    //  Ask for filename.
+    AlertWindow aw{"Project Name",
+                    "Save to: " + folder.getFullPathName(),
+                    AlertWindow::QuestionIcon};
+    aw.addTextEditor("name", "project", "Filename:");
+    aw.addButton("Save", 1);
+    aw.addButton("Cancel", 0);
+    if (aw.runModalLoop() == 0) return std::nullopt;
+
+    auto name = aw.getTextEditorContents("name").trim();
+    if (name.isEmpty()) return std::nullopt;
+
+    //  Ensure .way extension.
+    if (!name.endsWithIgnoreCase(".way")) name += ".way";
+
+    auto full = folder.getChildFile(name).getFullPathName().toStdString();
+
+    //  Manual overwrite check.
+    if (File(full).existsAsFile()) {
+        if (!AlertWindow::showOkCancelBox(
+                    AlertWindow::WarningIcon,
+                    "Overwrite?",
+                    "\"" + name + "\" already exists.\nReplace it?")) {
+            return std::nullopt;
         }
-        //  Manual overwrite check.
-        if (File(path).existsAsFile()) {
-            if (!AlertWindow::showOkCancelBox(
-                        AlertWindow::WarningIcon,
-                        "Overwrite?",
-                        "A file named \"" + File(path).getFileName()
-                        + "\" already exists.\n\nDo you want to replace it?")) {
-                return std::nullopt;
-            }
-        }
-        return path;
     }
-    return std::nullopt;
+    return full;
 }
 
 main_window::wants_to_close::connection main_window::connect_wants_to_close(
