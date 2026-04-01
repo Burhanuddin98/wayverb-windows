@@ -282,7 +282,12 @@ std::string project::get_extensions() const {
 void project::save_to(const std::string& fpath) {
     if (needs_save_) {
         //  Create the .way project directory if it doesn't exist.
-        juce::File(fpath).createDirectory();
+        auto dir_result = juce::File(fpath).createDirectory();
+        if (!dir_result.wasOk()) {
+            throw std::runtime_error(
+                    "Cannot create project directory: "
+                    + dir_result.getErrorMessage().toStdString());
+        }
 
         //  write current geometry to file
         scene_data_.save(project::compute_model_path(fpath));

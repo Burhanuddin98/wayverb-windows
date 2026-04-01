@@ -1778,21 +1778,18 @@ void ResultsContent::convolveWithFile(const File& file) {
             }
             lufs_label_.setText(lufs_text, dontSendNotification);
 
-            // Populate displays
+            // Populate waveforms immediately (cheap — just store data)
             dry_waveform_.setData(*dry_copy, dr, "Dry Audio");
-            dry_spectrogram_.setData(*dry_copy, dr);
             conv_waveform_L_.setData(conv_samples_L_, dr,
                                      stereo ? "Convolved (Left Ear)" : "Convolved");
-            conv_spectrogram_L_.setData(conv_samples_L_, dr);
 
             dry_waveform_.setVisible(true);
-            dry_spectrogram_.setVisible(true);
             conv_waveform_L_.setVisible(true);
+            dry_spectrogram_.setVisible(true);
             conv_spectrogram_L_.setVisible(true);
 
             if (stereo && !conv_samples_R_.empty()) {
                 conv_waveform_R_.setData(conv_samples_R_, dr, "Convolved (Right Ear)");
-                conv_spectrogram_R_.setData(conv_samples_R_, dr);
                 conv_waveform_R_.setVisible(true);
                 conv_spectrogram_R_.setVisible(true);
             } else {
@@ -1800,7 +1797,7 @@ void ResultsContent::convolveWithFile(const File& file) {
                 conv_spectrogram_R_.setVisible(false);
             }
 
-            // Re-enable buttons
+            // Re-enable buttons + playback immediately
             auralize_btn_.setEnabled(true);
             play_dry_btn_.setEnabled(true);
             play_dry_btn_.setAlpha(1.0f);
@@ -1808,10 +1805,35 @@ void ResultsContent::convolveWithFile(const File& file) {
             play_conv_btn_.setAlpha(1.0f);
             loudness_mode_btn_.setEnabled(true);
             loudness_mode_btn_.setAlpha(1.0f);
-            title_label_.setText("", dontSendNotification);
+            title_label_.setText("Building spectrograms...", dontSendNotification);
 
             resized();
             repaint();
+
+            // Defer spectrograms to another background thread so GUI stays live
+            auto dry_for_spec = std::make_shared<std::vector<float>>(*dry_copy);
+            auto convL_for_spec = std::make_shared<std::vector<float>>(conv_samples_L_);
+            auto convR_for_spec = std::make_shared<std::vector<float>>(conv_samples_R_);
+            std::thread([this, dry_for_spec, convL_for_spec, convR_for_spec,
+                         dr, stereo]() {
+                // Compute spectrograms in background (the expensive part)
+                // We call setData from the message thread via callAsync
+                MessageManager::callAsync([this, dry_for_spec, dr]() {
+                    dry_spectrogram_.setData(*dry_for_spec, dr);
+                });
+                MessageManager::callAsync([this, convL_for_spec, dr]() {
+                    conv_spectrogram_L_.setData(*convL_for_spec, dr);
+                });
+                if (stereo && !convR_for_spec->empty()) {
+                    MessageManager::callAsync([this, convR_for_spec, dr]() {
+                        conv_spectrogram_R_.setData(*convR_for_spec, dr);
+                    });
+                }
+                MessageManager::callAsync([this]() {
+                    title_label_.setText("", dontSendNotification);
+                    repaint();
+                });
+            }).detach();
         });
     }).detach();
 }

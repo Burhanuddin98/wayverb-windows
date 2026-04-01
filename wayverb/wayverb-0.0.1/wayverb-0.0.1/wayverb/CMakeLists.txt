@@ -32,6 +32,7 @@ file(GLOB_RECURSE APP_SRCS "Source/*.cpp")
 add_executable(wayverb WIN32
     ${JUCE_SRCS}
     ${APP_SRCS}
+    wayverb.rc
 )
 
 # ── Compile definitions ───────────────────────────────────────────────────────

@@ -214,16 +214,41 @@ void normalize_distance(Vec& v, double sample_rate, float distance,
 //  DC-block a signal with a high-pass filter.
 template <typename Vec>
 void dc_block(Vec& v, double sample_rate, double cutoff_hz = 20.0,
-              double width = 0.3) {
+              double /*width*/ = 0.3) {
     if (v.empty()) return;
-    const auto cutoff = cutoff_hz / sample_rate;
-    frequency_domain::filter filt{
-            frequency_domain::best_fft_length(v.size()) << 2};
-    filt.run(begin(v), end(v), begin(v), [&](auto cplx, auto freq) {
-        return cplx * static_cast<float>(
-                frequency_domain::compute_hipass_magnitude(
-                        freq, cutoff, width, 0));
-    });
+    //  Use a causal 2nd-order Butterworth high-pass instead of the old FFT
+    //  filter.  The FFT approach with 4x zero-padding introduced broadband
+    //  pre-ring before the direct sound spike — a non-causal artefact that
+    //  contaminated the first 0-50 ms of the IR.  A causal biquad has zero
+    //  pre-ring while still removing DC/sub-bass rumble.
+    const double w0 = 2.0 * M_PI * cutoff_hz / sample_rate;
+    const double alpha = std::sin(w0) / (2.0 * std::sqrt(2.0));  // Q = sqrt(2)/2
+    const double cos_w0 = std::cos(w0);
+    const double a0 = 1.0 + alpha;
+    const double b0 = ((1.0 + cos_w0) / 2.0) / a0;
+    const double b1 = (-(1.0 + cos_w0))       / a0;
+    const double b2 = ((1.0 + cos_w0) / 2.0) / a0;
+    const double a1 = (-2.0 * cos_w0)         / a0;
+    const double a2 = (1.0 - alpha)           / a0;
+
+    //  Forward pass.
+    double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+    for (auto& s : v) {
+        double x0 = s;
+        double y0 = b0*x0 + b1*x1 + b2*x2 - a1*y1 - a2*y2;
+        x2 = x1; x1 = x0;
+        y2 = y1; y1 = y0;
+        s = static_cast<float>(y0);
+    }
+    //  Reverse pass for zero-phase (linear phase) without pre-ring.
+    x1 = x2 = y1 = y2 = 0;
+    for (auto it = v.rbegin(); it != v.rend(); ++it) {
+        double x0 = *it;
+        double y0 = b0*x0 + b1*x1 + b2*x2 - a1*y1 - a2*y2;
+        x2 = x1; x1 = x0;
+        y2 = y1; y1 = y0;
+        *it = static_cast<float>(y0);
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

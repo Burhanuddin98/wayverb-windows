@@ -367,7 +367,17 @@ main_window::browse_for_file_to_save() {
     FileChooser fc{"Save Location...", File(), project::project_wildcard};
     if (fc.browseForFileToSave(true)) {
         const auto path = fc.getResult();
-        path.createDirectory();
+        auto result = path.createDirectory();
+        if (!result.wasOk()) {
+            AlertWindow::showMessageBoxAsync(
+                    AlertWindow::AlertIconType::WarningIcon,
+                    "Cannot Save",
+                    "Failed to create project folder:\n"
+                    + path.getFullPathName() + "\n\n"
+                    + result.getErrorMessage()
+                    + "\n\nTry saving to a different location.");
+            return std::nullopt;
+        }
         return path.getFullPathName().toStdString();
     }
     return std::nullopt;
