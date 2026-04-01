@@ -10,6 +10,7 @@
 #include <complex>
 #include <numeric>
 #include <algorithm>
+#include <thread>
 
 // ── Popout window subclass with working close + wayverb title bar ───────────
 class PopoutWindow : public DocumentWindow {
@@ -1648,6 +1649,13 @@ void ResultsContent::convolveWithFile(const File& file) {
         return;
     }
 
+    // Disable buttons during computation
+    auralize_btn_.setEnabled(false);
+    play_dry_btn_.setEnabled(false);
+    play_conv_btn_.setEnabled(false);
+    loudness_mode_btn_.setEnabled(false);
+    title_label_.setText("Computing convolution...", dontSendNotification);
+
     // Read entire file (up to 5 minutes at native rate), preserving all channels.
     const double dry_native_rate = reader->sampleRate;
     dry_rate_ = dry_native_rate;
@@ -1699,101 +1707,113 @@ void ResultsContent::convolveWithFile(const File& file) {
         }
     }
 
-    // FFT-convolve dry audio with each resampled IR channel (all at dry rate)
-    std::vector<std::vector<float>> conv_per_ch;
-    for (auto& ir : irs_at_dry_rate)
-        conv_per_ch.push_back(fft_convolve(dry_samples_, ir));
+    // Heavy work in background thread — convolution, LUFS, then UI update
+    auto irs_copy = std::make_shared<std::vector<std::vector<float>>>(
+            std::move(irs_at_dry_rate));
+    auto dry_copy = std::make_shared<std::vector<float>>(dry_samples_);
+    const double dr = dry_rate_;
+    const bool stereo = is_stereo_;
+    const bool match_loud = match_dry_loudness_;
 
-    conv_samples_L_ = conv_per_ch.empty() ? std::vector<float>() : conv_per_ch[0];
-    conv_samples_R_ = (conv_per_ch.size() >= 2) ? conv_per_ch[1] : std::vector<float>();
+    std::thread([this, irs_copy, dry_copy, dr, stereo, match_loud]() {
+        // FFT-convolve (runs in background)
+        std::vector<std::vector<float>> conv_per_ch;
+        for (auto& ir : *irs_copy)
+            conv_per_ch.push_back(fft_convolve(*dry_copy, ir));
 
-    // Build convolved playback buffer — always at least stereo so both ears play.
-    int n_ir_ch = int(conv_per_ch.size());
-    int conv_len = conv_per_ch.empty() ? 0 : int(conv_per_ch[0].size());
-    int n_play_ch = std::max(n_ir_ch, 2);
-    conv_buffer_.setSize(n_play_ch, conv_len);
-    if (n_ir_ch >= 2) {
-        // Binaural: L and R from separate IR channels
-        for (int c = 0; c < n_ir_ch; ++c)
-            conv_buffer_.copyFrom(c, 0, conv_per_ch[c].data(), conv_len);
-    } else if (n_ir_ch == 1) {
-        // Mono IR convolution → duplicate to both channels
-        conv_buffer_.copyFrom(0, 0, conv_per_ch[0].data(), conv_len);
-        conv_buffer_.copyFrom(1, 0, conv_per_ch[0].data(), conv_len);
-    }
+        auto convL = conv_per_ch.empty() ? std::vector<float>() : conv_per_ch[0];
+        auto convR = (conv_per_ch.size() >= 2) ? conv_per_ch[1] : std::vector<float>();
+        auto convL_raw = convL;
+        auto convR_raw = convR;
 
-    has_dry_ = true;
+        // LUFS (runs in background)
+        double d_lufs = measure_lufs(*dry_copy, dr);
+        double c_lufs_L = measure_lufs(convL, dr);
+        double c_lufs_R = convR.empty() ? -100.0 : measure_lufs(convR, dr);
+        double c_lufs = std::max(c_lufs_L, c_lufs_R);
+        double c_lufs_raw = c_lufs;
 
-    // ── LUFS measurement ──
-    dry_lufs_ = measure_lufs(dry_samples_, dry_rate_);
+        // Apply loudness matching
+        if (match_loud && d_lufs > -90.0 && c_lufs > -90.0) {
+            float gain = static_cast<float>(
+                    std::pow(10.0, (d_lufs - c_lufs) / 20.0));
+            for (auto& s : convL) s *= gain;
+            for (auto& s : convR) s *= gain;
+            c_lufs = d_lufs;
+        }
 
-    // For convolved, measure the loudest channel
-    double conv_lufs_L = measure_lufs(conv_samples_L_, dry_rate_);
-    double conv_lufs_R = conv_samples_R_.empty()
-            ? -100.0 : measure_lufs(conv_samples_R_, dry_rate_);
-    conv_lufs_ = std::max(conv_lufs_L, conv_lufs_R);
+        // Post results to GUI thread
+        MessageManager::callAsync([this, dry_copy, dr, stereo,
+                                   convL = std::move(convL),
+                                   convR = std::move(convR),
+                                   convL_raw = std::move(convL_raw),
+                                   convR_raw = std::move(convR_raw),
+                                   d_lufs, c_lufs, c_lufs_raw]() mutable {
+            conv_samples_L_ = std::move(convL);
+            conv_samples_R_ = std::move(convR);
+            conv_samples_L_raw_ = std::move(convL_raw);
+            conv_samples_R_raw_ = std::move(convR_raw);
+            dry_lufs_ = d_lufs;
+            conv_lufs_ = c_lufs;
+            conv_lufs_raw_ = c_lufs_raw;
+            has_dry_ = true;
 
-    fprintf(stderr, "[results] LUFS: dry=%.1f conv=%.1f room_gain=%.1f dB\n",
-            dry_lufs_, conv_lufs_, conv_lufs_ - dry_lufs_);
-    fflush(stderr);
+            // Build playback buffer
+            int n_ir_ch = conv_samples_R_.empty() ? 1 : 2;
+            int conv_len = int(conv_samples_L_.size());
+            int n_play_ch = std::max(n_ir_ch, 2);
+            conv_buffer_.setSize(n_play_ch, conv_len);
+            conv_buffer_.copyFrom(0, 0, conv_samples_L_.data(), conv_len);
+            if (n_ir_ch >= 2)
+                conv_buffer_.copyFrom(1, 0, conv_samples_R_.data(), conv_len);
+            else
+                conv_buffer_.copyFrom(1, 0, conv_samples_L_.data(), conv_len);
 
-    // Apply loudness matching if enabled
-    if (match_dry_loudness_ && dry_lufs_ > -90.0 && conv_lufs_ > -90.0) {
-        float gain = static_cast<float>(
-                std::pow(10.0, (dry_lufs_ - conv_lufs_) / 20.0));
-        for (auto& s : conv_samples_L_) s *= gain;
-        for (auto& s : conv_samples_R_) s *= gain;
-        // Update playback buffer too
-        for (int c = 0; c < conv_buffer_.getNumChannels(); ++c)
-            conv_buffer_.applyGain(c, 0, conv_buffer_.getNumSamples(), gain);
-        conv_lufs_ = dry_lufs_;  // they now match
-        fprintf(stderr, "[results] matched dry loudness: gain=%.3f (%.1f dB)\n",
-                gain, 20.0 * std::log10(gain));
-        fflush(stderr);
-    }
+            // LUFS display
+            String lufs_text;
+            lufs_text << "Dry: " << String(dry_lufs_, 1) << " LUFS";
+            if (conv_lufs_ > -90.0) {
+                lufs_text << "    Conv: " << String(conv_lufs_, 1) << " LUFS";
+                lufs_text << "    Room gain: " << String(conv_lufs_ - dry_lufs_, 1) << " dB";
+            }
+            lufs_label_.setText(lufs_text, dontSendNotification);
 
-    // Update LUFS display
-    String lufs_text;
-    lufs_text << "Dry: " << String(dry_lufs_, 1) << " LUFS";
-    if (conv_lufs_ > -90.0) {
-        lufs_text << "    Conv: " << String(conv_lufs_, 1) << " LUFS";
-        lufs_text << "    Room gain: " << String(conv_lufs_ - dry_lufs_, 1) << " dB";
-    }
-    lufs_label_.setText(lufs_text, dontSendNotification);
+            // Populate displays
+            dry_waveform_.setData(*dry_copy, dr, "Dry Audio");
+            dry_spectrogram_.setData(*dry_copy, dr);
+            conv_waveform_L_.setData(conv_samples_L_, dr,
+                                     stereo ? "Convolved (Left Ear)" : "Convolved");
+            conv_spectrogram_L_.setData(conv_samples_L_, dr);
 
-    loudness_mode_btn_.setEnabled(true);
-    loudness_mode_btn_.setAlpha(1.0f);
+            dry_waveform_.setVisible(true);
+            dry_spectrogram_.setVisible(true);
+            conv_waveform_L_.setVisible(true);
+            conv_spectrogram_L_.setVisible(true);
 
-    // Populate comparison displays (all at dry audio's native rate now)
-    dry_waveform_.setData(dry_samples_, dry_rate_, "Dry Audio");
-    dry_spectrogram_.setData(dry_samples_, dry_rate_);
+            if (stereo && !conv_samples_R_.empty()) {
+                conv_waveform_R_.setData(conv_samples_R_, dr, "Convolved (Right Ear)");
+                conv_spectrogram_R_.setData(conv_samples_R_, dr);
+                conv_waveform_R_.setVisible(true);
+                conv_spectrogram_R_.setVisible(true);
+            } else {
+                conv_waveform_R_.setVisible(false);
+                conv_spectrogram_R_.setVisible(false);
+            }
 
-    conv_waveform_L_.setData(conv_samples_L_, dry_rate_,
-                             is_stereo_ ? "Convolved (Left Ear)" : "Convolved");
-    conv_spectrogram_L_.setData(conv_samples_L_, dry_rate_);
+            // Re-enable buttons
+            auralize_btn_.setEnabled(true);
+            play_dry_btn_.setEnabled(true);
+            play_dry_btn_.setAlpha(1.0f);
+            play_conv_btn_.setEnabled(true);
+            play_conv_btn_.setAlpha(1.0f);
+            loudness_mode_btn_.setEnabled(true);
+            loudness_mode_btn_.setAlpha(1.0f);
+            title_label_.setText("", dontSendNotification);
 
-    dry_waveform_.setVisible(true);
-    dry_spectrogram_.setVisible(true);
-    conv_waveform_L_.setVisible(true);
-    conv_spectrogram_L_.setVisible(true);
-
-    if (is_stereo_ && !conv_samples_R_.empty()) {
-        conv_waveform_R_.setData(conv_samples_R_, dry_rate_, "Convolved (Right Ear)");
-        conv_spectrogram_R_.setData(conv_samples_R_, dry_rate_);
-        conv_waveform_R_.setVisible(true);
-        conv_spectrogram_R_.setVisible(true);
-    } else {
-        conv_waveform_R_.setVisible(false);
-        conv_spectrogram_R_.setVisible(false);
-    }
-
-    play_dry_btn_.setEnabled(true);
-    play_dry_btn_.setAlpha(1.0f);
-    play_conv_btn_.setEnabled(true);
-    play_conv_btn_.setAlpha(1.0f);
-
-    resized();
-    repaint();
+            resized();
+            repaint();
+        });
+    }).detach();
 }
 
 void ResultsContent::buttonClicked(Button* b) {
@@ -1837,44 +1857,35 @@ void ResultsContent::buttonClicked(Button* b) {
         loudness_mode_btn_.setButtonText(
                 match_dry_loudness_ ? "Match Dry Loudness" : "Physical Loudness");
 
-        // Apply or remove loudness matching without re-opening file chooser
-        if (has_dry_ && dry_lufs_ > -90.0 && conv_lufs_ > -90.0) {
-            // Re-convolve from stored IR data (no file chooser)
-            std::vector<std::vector<float>> conv_per_ch;
-            for (auto& ch : ir_channels_)
-                conv_per_ch.push_back(fft_convolve(dry_samples_, ch.samples));
-
-            conv_samples_L_ = conv_per_ch.empty()
-                    ? std::vector<float>() : conv_per_ch[0];
-            conv_samples_R_ = (conv_per_ch.size() >= 2)
-                    ? conv_per_ch[1] : std::vector<float>();
-
-            // Rebuild playback buffer
-            int n_ch = std::max(int(conv_per_ch.size()), 2);
-            int conv_len = conv_samples_L_.empty() ? 0 : int(conv_samples_L_.size());
-            conv_buffer_.setSize(n_ch, conv_len);
-            if (conv_per_ch.size() >= 2) {
-                for (int c = 0; c < int(conv_per_ch.size()); ++c)
-                    conv_buffer_.copyFrom(c, 0, conv_per_ch[c].data(), conv_len);
-            } else if (!conv_per_ch.empty()) {
-                conv_buffer_.copyFrom(0, 0, conv_per_ch[0].data(), conv_len);
-                conv_buffer_.copyFrom(1, 0, conv_per_ch[0].data(), conv_len);
+        // Just apply/remove gain — no need to re-convolve
+        if (has_dry_ && dry_lufs_ > -90.0 && conv_lufs_raw_ > -90.0) {
+            float gain = 1.0f;
+            if (match_dry_loudness_) {
+                gain = static_cast<float>(
+                        std::pow(10.0, (dry_lufs_ - conv_lufs_raw_) / 20.0));
+                conv_lufs_ = dry_lufs_;
+            } else {
+                conv_lufs_ = conv_lufs_raw_;
             }
 
-            // Measure fresh LUFS
-            conv_lufs_ = measure_lufs(conv_samples_L_, dry_rate_);
-
-            if (match_dry_loudness_) {
-                float gain = static_cast<float>(
-                        std::pow(10.0, (dry_lufs_ - conv_lufs_) / 20.0));
+            // Rebuild convolved samples from raw (unscaled) convolution
+            conv_samples_L_ = conv_samples_L_raw_;
+            conv_samples_R_ = conv_samples_R_raw_;
+            if (gain != 1.0f) {
                 for (auto& s : conv_samples_L_) s *= gain;
                 for (auto& s : conv_samples_R_) s *= gain;
-                for (int c = 0; c < conv_buffer_.getNumChannels(); ++c)
-                    conv_buffer_.applyGain(c, 0, conv_buffer_.getNumSamples(), gain);
-                conv_lufs_ = dry_lufs_;
             }
 
-            // Update displays
+            // Rebuild playback buffer
+            int n_ch = conv_buffer_.getNumChannels();
+            int conv_len = int(conv_samples_L_.size());
+            conv_buffer_.setSize(n_ch, conv_len);
+            conv_buffer_.copyFrom(0, 0, conv_samples_L_.data(), conv_len);
+            if (n_ch >= 2 && !conv_samples_R_.empty())
+                conv_buffer_.copyFrom(1, 0, conv_samples_R_.data(), conv_len);
+            else if (n_ch >= 2)
+                conv_buffer_.copyFrom(1, 0, conv_samples_L_.data(), conv_len);
+
             String lufs_text;
             lufs_text << "Dry: " << String(dry_lufs_, 1) << " LUFS";
             lufs_text << "    Conv: " << String(conv_lufs_, 1) << " LUFS";

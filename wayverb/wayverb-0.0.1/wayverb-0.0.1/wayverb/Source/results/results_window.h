@@ -281,6 +281,9 @@ private:
     std::vector<float> dry_samples_;
     std::vector<float> conv_samples_L_;
     std::vector<float> conv_samples_R_;
+    std::vector<float> conv_samples_L_raw_;  // unscaled convolution result
+    std::vector<float> conv_samples_R_raw_;
+    double conv_lufs_raw_ = -100.0;          // LUFS before loudness matching
     AudioBuffer<float> dry_buffer_;
     AudioBuffer<float> conv_buffer_;
 
