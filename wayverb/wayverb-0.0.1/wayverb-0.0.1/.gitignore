@@ -43,7 +43,26 @@ build_log.txt
 build_win/
 build_mgu/
 build_gui/
-bin/
+
+# bin/ — track exe, DLLs, and materials.json; ignore test/build artifacts
+bin/*.log
+bin/*.maxpat
+bin/wayverb_new.exe
+bin/CMakeLists.txt
+bin/NVIDIA Corporation/
+bin/boundary_test/
+bin/box/
+bin/crackly_tunnel/
+bin/diffuse_decay/
+bin/fitted_boundary/
+bin/level_match/
+bin/mic_test/
+bin/rt60/
+bin/sheaffer2014/
+bin/siltanen2013/
+bin/solution_growth/
+bin/test_signals/
+bin/waveguide_distance_test/
 
 # Claude memory
 .claude/
