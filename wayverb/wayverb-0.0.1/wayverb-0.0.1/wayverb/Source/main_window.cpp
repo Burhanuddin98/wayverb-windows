@@ -364,12 +364,26 @@ void main_window::save_as() {
 
 std::optional<std::string>
 main_window::browse_for_file_to_save() {
+    //  Use browseForFileToSave(false) — no overwrite prompt.
+    //  The 'true' variant triggers Windows Controlled Folder Access checks
+    //  which block saves to Downloads and other "protected" folders even
+    //  when the user has full write permission.
     FileChooser fc{"Save Project...", File(), project::project_wildcard};
-    if (fc.browseForFileToSave(true)) {
+    if (fc.browseForFileToSave(false)) {
         auto path = fc.getResult().getFullPathName().toStdString();
         //  Ensure .way extension.
         if (path.size() < 4 || path.substr(path.size() - 4) != ".way") {
             path += ".way";
+        }
+        //  Manual overwrite check.
+        if (File(path).existsAsFile()) {
+            if (!AlertWindow::showOkCancelBox(
+                        AlertWindow::WarningIcon,
+                        "Overwrite?",
+                        "A file named \"" + File(path).getFileName()
+                        + "\" already exists.\n\nDo you want to replace it?")) {
+                return std::nullopt;
+            }
         }
         return path;
     }
