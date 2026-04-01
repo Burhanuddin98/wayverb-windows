@@ -409,7 +409,8 @@ private:
 
 class master::impl final : public Component,
                            public generic_renderer<view>::Listener,
-                           public SettableTooltipClient {
+                           public SettableTooltipClient,
+                           public Timer {
 public:
     impl(main_model& model)
             : model_{model}
@@ -567,6 +568,31 @@ public:
                "right-click: rotate view\n"
                "middle-click: pan view\n"
                "scroll: zoom view");
+
+        // Poll for source/receiver property changes (orientation, position, etc.)
+        // The owning_member notification chain doesn't always propagate individual
+        // property changes to the scene view, so we refresh periodically.
+        startTimerHz(10);
+    }
+
+    ~impl() noexcept { stopTimer(); }
+
+    void timerCallback() override {
+        // Refresh sources and receivers in the 3D view.
+        {
+            auto& src = *model_.project.persistent.sources();
+            auto copy = src;
+            view_.high_priority_command([r = std::move(copy)](auto& renderer) {
+                renderer.set_sources(std::move(r));
+            });
+        }
+        {
+            auto& rcv = *model_.project.persistent.receivers();
+            auto copy = rcv;
+            view_.high_priority_command([r = std::move(copy)](auto& renderer) {
+                renderer.set_receivers(std::move(r));
+            });
+        }
     }
 
     void resized() override {

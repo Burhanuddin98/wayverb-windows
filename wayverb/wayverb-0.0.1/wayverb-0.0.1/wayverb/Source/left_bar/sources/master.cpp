@@ -1,10 +1,14 @@
 #include "master.h"
 #include "../list_config_item.h"
 
+#include "../azimuth_elevation_property.h"
 #include "../vec3_property.h"
 #include "text_property.h"
 
 #include "combined/model/source.h"
+
+#include "core/az_el.h"
+#include "core/orientation.h"
 
 #include <cmath>
 
@@ -28,6 +32,8 @@ public:
         combo_.addItem("hypercardioid",  1 + static_cast<int>(pattern_t::hypercardioid));
         combo_.addItem("figure-eight",   1 + static_cast<int>(pattern_t::figure_eight));
         combo_.addItem("hemisphere",     1 + static_cast<int>(pattern_t::hemisphere));
+        combo_.addItem("subcardioid",    1 + static_cast<int>(pattern_t::subcardioid));
+        combo_.addItem("shotgun",        1 + static_cast<int>(pattern_t::shotgun));
         combo_.addListener(this);
         addAndMakeVisible(combo_);
     }
@@ -136,11 +142,16 @@ private:
         using P = pattern_t;
         switch (pattern_) {
             case P::omnidirectional: return 1.0f;
-            case P::cardioid:        return 0.5f + 0.5f * cos_t;
+            case P::cardioid:        return std::abs(0.5f * (1.0f + cos_t));
             case P::supercardioid:   return std::abs(0.37f + 0.63f * cos_t);
             case P::hypercardioid:   return std::abs(0.25f + 0.75f * cos_t);
             case P::figure_eight:    return std::abs(cos_t);
             case P::hemisphere:      return cos_t >= 0.0f ? cos_t : 0.0f;
+            case P::subcardioid:     return std::abs(0.75f + 0.25f * cos_t);
+            case P::shotgun: {
+                float c = std::max(0.0f, cos_t);
+                return c * c * c * c * c * c * c * c;
+            }
             default: return 1.0f;
         }
     }
@@ -154,6 +165,8 @@ private:
             case P::hypercardioid:   return "hypercardioid";
             case P::figure_eight:    return "figure-eight";
             case P::hemisphere:      return "hemisphere";
+            case P::subcardioid:     return "subcardioid";
+            case P::shotgun:         return "shotgun";
             default: return "";
         }
     }
@@ -170,13 +183,18 @@ public:
         //  Make properties.
         auto name        = std::make_unique<text_property>("name");
         auto position    = std::make_unique<vec3_property>("position", aabb_);
+        auto orientation = std::make_unique<azimuth_elevation_property>("orientation");
         auto directivity = std::make_unique<directivity_property>("directivity");
 
         auto update_from_source =
                 [ this, n = name.get(), p = position.get(),
+                  o = orientation.get(),
                   d = directivity.get() ](auto& source) {
             n->set(source.get_name());
             p->set(source.get_position());
+            o->set(wayverb::core::compute_azimuth_elevation(
+                    source.get_orientation().get_pointing(),
+                    source.get_orientation().get_up()));
             d->set(source.get_directivity());
             diagram_.set_pattern(source.get_directivity());
         };
@@ -190,11 +208,16 @@ public:
                 [this](auto&, auto name) { source_->set_name(name); });
         position->connect_on_change(
                 [this](auto&, auto pos) { source_->set_position(pos); });
+        orientation->connect_on_change([this](auto&, auto az_el) {
+            source_->set_orientation(wayverb::core::orientation{
+                    compute_pointing(az_el), compute_up(az_el)});
+        });
         directivity->connect_on_change(
                 [this](auto pattern) { source_->set_directivity(pattern); });
 
         panel_.addProperties({name.release()});
         panel_.addProperties({position.release()});
+        panel_.addProperties({orientation.release()});
         panel_.addProperties({directivity.release()});
 
         addAndMakeVisible(panel_);

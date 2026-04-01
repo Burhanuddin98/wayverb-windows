@@ -152,6 +152,7 @@ void main_window::closeButtonPressed() {
 
 void main_window::getAllCommands(Array<CommandID>& commands) {
     commands.addArray({
+            CommandIDs::idOpenProject,
             CommandIDs::idSaveProject,
             CommandIDs::idSaveAsProject,
             CommandIDs::idCloseProject,
@@ -166,6 +167,15 @@ void main_window::getAllCommands(Array<CommandID>& commands) {
 void main_window::getCommandInfo(CommandID command_id,
                                  ApplicationCommandInfo& result) {
     switch (command_id) {
+        case CommandIDs::idOpenProject:
+            result.setInfo("Open Project...",
+                           "Open an existing project",
+                           "General",
+                           0);
+            result.defaultKeypresses.add(
+                    KeyPress('o', ModifierKeys::commandModifier, 0));
+            break;
+
         case CommandIDs::idSaveProject:
             result.setInfo("Save...", "Save", "General", 0);
             result.defaultKeypresses.add(
@@ -228,6 +238,12 @@ void main_window::getCommandInfo(CommandID command_id,
 
 bool main_window::perform(const InvocationInfo& info) {
     switch (info.commandID) {
+        case CommandIDs::idOpenProject:
+            // Forward to the Application instance which owns open_project logic
+            if (auto* next = getNextCommandTarget())
+                return next->perform(info);
+            return false;
+
         case CommandIDs::idSaveProject:
             try_and_explain([&] { save(); }, "Saving");
             return true;

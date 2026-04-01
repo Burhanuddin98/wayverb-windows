@@ -24,6 +24,8 @@ enum class directivity_pattern {
     hypercardioid,        ///< 0.25 + 0.75 × cos θ
     figure_eight,         ///< |cos θ|
     hemisphere,           ///< cos θ for θ < 90°, else 0
+    subcardioid,          ///< 0.75 + 0.25 × cos θ  (wide, PA-style)
+    shotgun,              ///< cos^8 θ  (narrow beam)
 };
 
 /// Compute the directivity gain for a given angle from the source's forward
@@ -42,6 +44,12 @@ inline float directivity_gain(directivity_pattern pattern, float cos_theta) {
             return std::abs(cos_theta);
         case directivity_pattern::hemisphere:
             return cos_theta > 0.0f ? cos_theta : 0.0f;
+        case directivity_pattern::subcardioid:
+            return std::max(0.0f, 0.75f + 0.25f * cos_theta);
+        case directivity_pattern::shotgun: {
+            const float c = std::max(0.0f, cos_theta);
+            return c * c * c * c * c * c * c * c;
+        }
         default:
             return 1.0f;
     }

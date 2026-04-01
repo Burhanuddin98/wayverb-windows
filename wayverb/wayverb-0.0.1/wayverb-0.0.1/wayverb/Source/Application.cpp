@@ -259,7 +259,18 @@ private:
     }
 
     void open_project_from_dialog() {
-        FileChooser fc("open project", File::nonexistent, valid_file_formats);
+        // Default to demo scenes folder
+        auto exeDir = File::getSpecialLocation(
+                File::currentExecutableFile).getParentDirectory();
+        auto defaultDir = exeDir.getParentDirectory()
+                .getChildFile("demo").getChildFile("assets")
+                .getChildFile("test_models");
+        if (!defaultDir.isDirectory())
+            defaultDir = exeDir.getChildFile("demo_models");
+        if (!defaultDir.isDirectory())
+            defaultDir = File::nonexistent;
+
+        FileChooser fc("open project", defaultDir, valid_file_formats);
         if (fc.browseForFileToOpen()) {
             open_project(fc.getResult().getFullPathName().toStdString());
         }

@@ -18,19 +18,30 @@ void FileDropComponent::removeListener(Listener* l) { listener_list.remove(l); }
 
 void FileDropComponent::buttonClicked(juce::Button* b) {
     if (b == &load_button) {
-        // Default to demo/assets/test_models if it exists
+        // Always default to demo/assets/test_models relative to the exe.
         auto exeDir = juce::File::getSpecialLocation(
                 juce::File::currentExecutableFile).getParentDirectory();
+
+        // Repo layout: bin/wayverb.exe -> ../demo/assets/test_models
         auto testModels = exeDir.getParentDirectory()
                 .getChildFile("demo").getChildFile("assets")
                 .getChildFile("test_models");
-        // Fallback: try from current working directory
+
+        // Release zip layout: wayverb.exe sits next to demo_models/
+        if (!testModels.isDirectory()) {
+            testModels = exeDir.getChildFile("demo_models");
+        }
+
+        // Fallback: cwd-based
         if (!testModels.isDirectory()) {
             testModels = juce::File::getCurrentWorkingDirectory()
                     .getChildFile("demo").getChildFile("assets")
                     .getChildFile("test_models");
         }
-        if (!testModels.isDirectory()) testModels = juce::File::nonexistent;
+
+        if (!testModels.isDirectory())
+            testModels = juce::File::nonexistent;
+
         juce::FileChooser fc("open...", testModels, valid_file_formats);
         if (fc.browseForFileToOpen()) {
             listener_list.call(&Listener::file_dropped, this, fc.getResult());

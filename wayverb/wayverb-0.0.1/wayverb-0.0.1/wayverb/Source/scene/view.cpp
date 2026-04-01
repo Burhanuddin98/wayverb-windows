@@ -103,21 +103,29 @@ public:
                                     glm::vec4{a, 0.0f, 0.0f, 1.0f}};
                     ret.set_scale(source_receiver_radius_);
                     ret.set_position(source->get_position());
-                    ret.set_pointing({source->get_orientation().get_pointing()});
+                    const auto pointing = source->get_orientation().get_pointing();
+                    ret.set_pointing({pointing});
                     const auto pattern = source->get_directivity();
-                    ret.set_pattern([pattern](float cos_theta) {
-                        //  Raw gain without clamping — abs() shows rear lobes.
-                        using P = wayverb::combined::model::directivity_pattern;
-                        switch (pattern) {
-                            case P::omnidirectional: return 1.0f;
-                            case P::cardioid:        return std::abs(0.5f * (1.0f + cos_theta));
-                            case P::supercardioid:   return std::abs(0.37f + 0.63f * cos_theta);
-                            case P::hypercardioid:   return std::abs(0.25f + 0.75f * cos_theta);
-                            case P::figure_eight:    return std::abs(cos_theta);
-                            case P::hemisphere:      return cos_theta > 0.0f ? cos_theta : 0.0f;
-                            default:                 return 1.0f;
-                        }
-                    });
+                    ret.set_patterns({{
+                        [pattern](float cos_theta) -> float {
+                            using P = wayverb::combined::model::directivity_pattern;
+                            switch (pattern) {
+                                case P::omnidirectional: return 1.0f;
+                                case P::cardioid:        return std::abs(0.5f * (1.0f + cos_theta));
+                                case P::supercardioid:   return std::abs(0.37f + 0.63f * cos_theta);
+                                case P::hypercardioid:   return std::abs(0.25f + 0.75f * cos_theta);
+                                case P::figure_eight:    return std::abs(cos_theta);
+                                case P::hemisphere:      return cos_theta > 0.0f ? cos_theta : 0.0f;
+                                case P::subcardioid:     return std::abs(0.75f + 0.25f * cos_theta);
+                                case P::shotgun: {
+                                    float c = std::max(0.0f, cos_theta);
+                                    return c*c*c*c*c*c*c*c;
+                                }
+                                default: return 1.0f;
+                            }
+                        },
+                        pointing
+                    }});
                     return ret;
                 });
     }

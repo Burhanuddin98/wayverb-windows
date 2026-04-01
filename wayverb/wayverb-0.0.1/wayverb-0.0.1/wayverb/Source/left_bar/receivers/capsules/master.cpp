@@ -92,7 +92,8 @@ public:
         auto update_from_hrtf =
                 [ this, o = orientation.get(), c = channel.get() ](auto& hrtf) {
             o->set(wayverb::core::compute_azimuth_elevation(
-                    hrtf.get().orientation.get_pointing()));
+                    hrtf.get().orientation.get_pointing(),
+                    hrtf.get().orientation.get_up()));
             c->content.set(hrtf.get().get_channel());
         };
 
@@ -103,7 +104,7 @@ public:
 
         orientation->connect_on_change([this](auto&, auto orientation) {
             model_.set_orientation(
-                    wayverb::core::orientation{compute_pointing(orientation)});
+                    wayverb::core::orientation{compute_pointing(orientation), compute_up(orientation)});
         });
 
         channel->content.connect_on_change(
@@ -194,7 +195,8 @@ public:
             d = display.get()
         ](auto& mic) {
             o->set(wayverb::core::compute_azimuth_elevation(
-                    mic.get().orientation.get_pointing()));
+                    mic.get().orientation.get_pointing(),
+                    mic.get().orientation.get_up()));
             s->set(mic.get().get_shape());
             d->set_shape(mic.get().get_shape());
         };
@@ -206,7 +208,7 @@ public:
 
         orientation->connect_on_change([this](auto&, auto orientation) {
             model_.set_orientation(
-                    wayverb::core::orientation{compute_pointing(orientation)});
+                    wayverb::core::orientation{compute_pointing(orientation), compute_up(orientation)});
         });
 
         shape->connect_on_change(

@@ -15,9 +15,14 @@ struct az_el final {
     constexpr az_el(float azimuth, float elevation)
             : azimuth{azimuth}
             , elevation{elevation} {}
+    constexpr az_el(float azimuth, float elevation, float roll)
+            : azimuth{azimuth}
+            , elevation{elevation}
+            , roll{roll} {}
 
     float azimuth{0};
     float elevation{0};
+    float roll{0};
 };
 
 az_el& operator+=(az_el& a, const az_el& b);
@@ -33,15 +38,18 @@ az_el operator/(const az_el& a, const az_el& b);
 float compute_azimuth(const glm::vec3& pointing);
 float compute_elevation(const glm::vec3& pointing);
 az_el compute_azimuth_elevation(const glm::vec3& pointing);
+az_el compute_azimuth_elevation(const glm::vec3& pointing,
+                                const glm::vec3& up);
 
 glm::vec3 compute_pointing(const az_el& azel);
+glm::vec3 compute_up(const az_el& azel);
 
 constexpr auto to_tuple(az_el& x) {
-    return std::tie(x.azimuth, x.elevation);
+    return std::tie(x.azimuth, x.elevation, x.roll);
 }
 
 constexpr auto to_tuple(const az_el&x) {
-    return std::tie(x.azimuth, x.elevation);
+    return std::tie(x.azimuth, x.elevation, x.roll);
 }
 
 constexpr auto operator==(const az_el& a, const az_el& b) {

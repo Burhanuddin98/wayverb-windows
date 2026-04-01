@@ -247,7 +247,8 @@ private:
 // ── Main results content ────────────────────────────────────────────────────
 class ResultsContent : public Component,
                        public Button::Listener,
-                       public ComboBox::Listener {
+                       public ComboBox::Listener,
+                       public ChangeListener {
 public:
     ResultsContent();
     ~ResultsContent() override;
@@ -258,6 +259,7 @@ public:
     void paint(Graphics& g) override;
     void buttonClicked(Button* b) override;
     void comboBoxChanged(ComboBox* box) override;
+    void changeListenerCallback(ChangeBroadcaster* source) override;
 
 private:
     void loadDryAndConvolve();

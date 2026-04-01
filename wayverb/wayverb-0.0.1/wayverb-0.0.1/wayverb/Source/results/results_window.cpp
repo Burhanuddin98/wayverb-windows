@@ -1458,6 +1458,7 @@ ResultsContent::ResultsContent() {
     // Playback engine
     source_player_.setSource(&transport_);
     device_manager_.addAudioCallback(&source_player_);
+    device_manager_.addChangeListener(this);
 
     // Output device selector
     output_device_box_.setTextWhenNothingSelected("Output Device...");
@@ -1479,10 +1480,16 @@ ResultsContent::ResultsContent() {
 }
 
 ResultsContent::~ResultsContent() {
+    device_manager_.removeChangeListener(this);
     transport_.stop();
     transport_.setSource(nullptr);
     source_player_.setSource(nullptr);
     device_manager_.removeAudioCallback(&source_player_);
+}
+
+void ResultsContent::changeListenerCallback(ChangeBroadcaster* source) {
+    if (source == &device_manager_)
+        populateOutputDevices();
 }
 
 void ResultsContent::populateOutputDevices() {

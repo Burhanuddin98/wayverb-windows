@@ -291,8 +291,9 @@ public:
             p = position.get(),
             o = orientation.get()
         ](auto& receiver) {
-            const auto q = receiver.get_orientation().get_pointing();
-            const auto az_el = wayverb::core::compute_azimuth_elevation(q);
+            const auto az_el = wayverb::core::compute_azimuth_elevation(
+                    receiver.get_orientation().get_pointing(),
+                    receiver.get_orientation().get_up());
             n->set(receiver.get_name());
             p->set(receiver.get_position());
             o->set(az_el);
@@ -311,8 +312,8 @@ public:
                 [this](auto&, auto pos) { receiver_.set_position(pos); });
 
         orientation->connect_on_change([this](auto&, auto az_el) {
-            receiver_.set_orientation(
-                    wayverb::core::orientation{compute_pointing(az_el)});
+            receiver_.set_orientation(wayverb::core::orientation{
+                    compute_pointing(az_el), compute_up(az_el)});
             // Also update diagram immediately (before model round-trips back)
             if (on_orientation_updated) on_orientation_updated(az_el);
         });
@@ -357,6 +358,13 @@ public:
         // Populate capsule arrows for initial capsule set.
         update_capsule_diagram();
 
+        // Listen for capsule changes (add/remove/reorder/edit) and refresh diagram.
+        capsule_connection_ =
+                wayverb::combined::model::min_size_vector<
+                        wayverb::combined::model::capsule, 1>::scoped_connection{
+                        receiver_->capsules()->connect(
+                                [this](auto&) { update_capsule_diagram(); })};
+
         addAndMakeVisible(properties_);
         addAndMakeVisible(capsules_);
         addAndMakeVisible(combo_box_);
@@ -399,6 +407,11 @@ private:
     model::Connector<ComboBox> capsule_presets_connector_{&combo_box_, this};
 
     main_model::capsule_presets_t presets_;
+
+    // Auto-refresh diagram when capsules change.
+    wayverb::combined::model::min_size_vector<
+            wayverb::combined::model::capsule, 1>::scoped_connection
+            capsule_connection_;
 
     /// Read current capsule orientations and names from the receiver model and push to diagram.
     void update_capsule_diagram() {

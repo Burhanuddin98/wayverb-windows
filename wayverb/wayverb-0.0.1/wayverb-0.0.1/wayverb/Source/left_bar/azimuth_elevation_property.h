@@ -29,6 +29,7 @@ public:
 private:
     slider_property* az_;
     slider_property* el_;
+    slider_property* roll_;
     on_change on_change_;
 };
 
