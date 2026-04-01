@@ -119,6 +119,8 @@ target_link_libraries(wayverb PRIVATE
     "C:/msys64/mingw64/lib/libmpg123.dll.a"
     "C:/msys64/mingw64/lib/libmp3lame.a"
     "C:/msys64/mingw64/lib/libopus.a"
+    # zlib (for .way project compression)
+    "C:/msys64/mingw64/lib/libz.a"
     # Windows system libraries required by JUCE
     wininet
     opengl32

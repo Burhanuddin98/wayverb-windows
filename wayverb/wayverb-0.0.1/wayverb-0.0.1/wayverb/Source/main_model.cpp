@@ -28,6 +28,8 @@
 #include <set>
 #include <sstream>
 
+#include <zlib.h>
+
 // Diagnostic log file — absolute path so it's always findable.
 static std::ofstream& diag_log() {
     static std::ofstream f("C:/RoomGUI/wayverb_diag.log",
@@ -38,30 +40,46 @@ static std::ofstream& diag_log() {
 project::project(const std::string& fpath)
         : scene_data_{[&]() -> std::string {
             if (!is_project_file(fpath)) return fpath;
-            //  Check if it's a single-file .way (starts with "WAY1") or
-            //  an old-style directory.
             if (juce::File(fpath).isDirectory()) {
                 return compute_model_path(fpath);
             }
-            //  Single-file .way: extract model to temp file for Assimp.
+            //  Single-file .way: read magic to determine version.
             std::ifstream in(fpath, std::ios::binary);
             char magic[4] = {};
             in.read(magic, 4);
-            if (std::string(magic, 4) == "WAY1") {
+            const std::string mag(magic, 4);
+
+            auto tmp = juce::File::getSpecialLocation(
+                    juce::File::tempDirectory)
+                    .getChildFile("wayverb_load_tmp.obj");
+
+            if (mag == "WAY2") {
+                //  Compressed format.
+                uint32_t mc = 0, cc = 0, mo = 0, co = 0;
+                in.read(reinterpret_cast<char*>(&mc), 4);
+                in.read(reinterpret_cast<char*>(&cc), 4);
+                in.read(reinterpret_cast<char*>(&mo), 4);
+                in.read(reinterpret_cast<char*>(&co), 4);
+                std::vector<uint8_t> model_z(mc);
+                in.read(reinterpret_cast<char*>(model_z.data()), mc);
+                //  Decompress model.
+                std::vector<uint8_t> model_raw(mo);
+                uLongf out_len = mo;
+                uncompress(model_raw.data(), &out_len, model_z.data(), mc);
+                tmp.replaceWithData(model_raw.data(), mo);
+                way_tmp_model_path_ = tmp.getFullPathName().toStdString();
+                return way_tmp_model_path_;
+            } else if (mag == "WAY1") {
+                //  Uncompressed format (v1).
                 uint32_t model_size = 0, config_size = 0;
                 in.read(reinterpret_cast<char*>(&model_size), 4);
                 in.read(reinterpret_cast<char*>(&config_size), 4);
                 std::vector<char> model_data(model_size);
                 in.read(model_data.data(), model_size);
-                //  Write model to temp file.
-                auto tmp = juce::File::getSpecialLocation(
-                        juce::File::tempDirectory)
-                        .getChildFile("wayverb_load_tmp.obj");
                 tmp.replaceWithData(model_data.data(), model_size);
                 way_tmp_model_path_ = tmp.getFullPathName().toStdString();
                 return way_tmp_model_path_;
             }
-            //  Fallback: maybe old folder format with wrong detection.
             return compute_model_path(fpath);
         }()}
         , needs_save_{!is_project_file(fpath)} {
@@ -159,15 +177,34 @@ project::project(const std::string& fpath)
             cereal::JSONInputArchive archive{stream};
             archive(persistent);
         } else {
-            //  Single-file .way format: read config from after the model data.
+            //  Single-file .way format.
             std::ifstream in(fpath, std::ios::binary);
             char magic[4];
             in.read(magic, 4);
-            if (std::string(magic, 4) == "WAY1") {
+            const std::string mag(magic, 4);
+
+            if (mag == "WAY2") {
+                uint32_t mc = 0, cc = 0, mo = 0, co = 0;
+                in.read(reinterpret_cast<char*>(&mc), 4);
+                in.read(reinterpret_cast<char*>(&cc), 4);
+                in.read(reinterpret_cast<char*>(&mo), 4);
+                in.read(reinterpret_cast<char*>(&co), 4);
+                in.seekg(20 + mc);  // skip header + compressed model
+                std::vector<uint8_t> config_z(cc);
+                in.read(reinterpret_cast<char*>(config_z.data()), cc);
+                std::vector<uint8_t> config_raw(co);
+                uLongf out_len = co;
+                uncompress(config_raw.data(), &out_len, config_z.data(), cc);
+                std::string config_json(
+                        reinterpret_cast<char*>(config_raw.data()), co);
+                std::istringstream config_ss(config_json);
+                cereal::JSONInputArchive archive{config_ss};
+                archive(persistent);
+            } else if (mag == "WAY1") {
                 uint32_t model_size = 0, config_size = 0;
                 in.read(reinterpret_cast<char*>(&model_size), 4);
                 in.read(reinterpret_cast<char*>(&config_size), 4);
-                in.seekg(12 + model_size);  // skip header + model
+                in.seekg(12 + model_size);
                 std::string config_json(config_size, '\0');
                 in.read(&config_json[0], config_size);
                 std::istringstream config_ss(config_json);
@@ -351,23 +388,67 @@ void project::save_to(const std::string& fpath) {
         { cereal::JSONOutputArchive archive{config_ss}; archive(persistent); }
         const auto config_str = config_ss.str();
 
-        //  Write the .way file.
-        std::ofstream out(fpath, std::ios::binary);
-        if (!out.is_open()) {
+        //  Compress model and config with zlib.
+        auto zlib_compress = [](const void* src, size_t src_len)
+                -> std::vector<uint8_t> {
+            uLongf bound = compressBound(static_cast<uLong>(src_len));
+            std::vector<uint8_t> out(bound);
+            if (compress2(out.data(), &bound,
+                          static_cast<const Bytef*>(src),
+                          static_cast<uLong>(src_len), 9) != Z_OK) {
+                throw std::runtime_error("zlib compression failed");
+            }
+            out.resize(bound);
+            return out;
+        };
+
+        auto model_z = zlib_compress(model_data.getData(), model_data.getSize());
+        auto config_z = zlib_compress(config_str.data(), config_str.size());
+
+        //  WAY2 format (compressed):
+        //    [4B]  "WAY2" magic
+        //    [4B]  model_compressed_size
+        //    [4B]  config_compressed_size
+        //    [4B]  model_original_size
+        //    [4B]  config_original_size
+        //    [model_compressed_size B]  zlib-compressed model
+        //    [config_compressed_size B] zlib-compressed config
+        const uint32_t mc = static_cast<uint32_t>(model_z.size());
+        const uint32_t cc = static_cast<uint32_t>(config_z.size());
+        const uint32_t mo = static_cast<uint32_t>(model_data.getSize());
+        const uint32_t co = static_cast<uint32_t>(config_str.size());
+
+        juce::MemoryBlock way_data;
+        way_data.append("WAY2", 4);
+        way_data.append(&mc, 4);
+        way_data.append(&cc, 4);
+        way_data.append(&mo, 4);
+        way_data.append(&co, 4);
+        way_data.append(model_z.data(), mc);
+        way_data.append(config_z.data(), cc);
+
+        //  Write to temp, then move to destination.
+        //  This works around Windows Controlled Folder Access which blocks
+        //  direct writes from GUI processes to Downloads/Documents/Desktop.
+        auto tmp_way = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                .getChildFile("wayverb_save_tmp.way");
+        if (!tmp_way.replaceWithData(way_data.getData(), way_data.getSize())) {
             throw std::runtime_error(
-                    "Cannot write to: " + fpath
-                    + "\nMake sure the location is writable.");
+                    "Cannot write temp file during save.");
         }
 
-        const uint32_t model_size = static_cast<uint32_t>(model_data.getSize());
-        const uint32_t config_size = static_cast<uint32_t>(config_str.size());
-
-        out.write("WAY1", 4);
-        out.write(reinterpret_cast<const char*>(&model_size), 4);
-        out.write(reinterpret_cast<const char*>(&config_size), 4);
-        out.write(static_cast<const char*>(model_data.getData()), model_size);
-        out.write(config_str.data(), config_size);
-        out.close();
+        juce::File dest(fpath);
+        dest.deleteFile();  // remove old if exists
+        if (!tmp_way.moveFileTo(dest)) {
+            //  Move failed — try direct copy as fallback.
+            if (!tmp_way.copyFileTo(dest)) {
+                tmp_way.deleteFile();
+                throw std::runtime_error(
+                        "Cannot write to: " + fpath
+                        + "\nMake sure the location is writable.");
+            }
+            tmp_way.deleteFile();
+        }
 
         needs_save_ = false;
     }
