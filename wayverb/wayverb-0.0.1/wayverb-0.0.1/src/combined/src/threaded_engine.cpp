@@ -352,11 +352,9 @@ void complete_engine::do_run(core::compute_context compute_context,
                 throw std::runtime_error{"All channels are silent."};
             }
 
-            //  Ceiling disabled for 32-bit float output: values > 1.0
-            //  are perfectly valid.  The old -1 dBTP (0.891) ceiling
-            //  clipped distance-normalized IRs at close range (e.g.
-            //  0.5m → target peak 2.0).
-            constexpr float ceiling = 0.0f;  //  disabled
+            //  Ceiling limiter at -1 dBTP.  Prevents clipped/saturated IRs
+            //  when distance normalization + HRTF gain push peaks above 1.0.
+            constexpr float ceiling = 0.891f;  //  -1 dBTP
             const auto factor = (ceiling > 0.0f && max_mag > ceiling)
                     ? static_cast<double>(ceiling) / max_mag
                     : 1.0;

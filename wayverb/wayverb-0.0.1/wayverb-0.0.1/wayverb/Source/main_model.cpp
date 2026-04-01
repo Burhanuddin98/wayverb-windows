@@ -60,13 +60,23 @@ project::project(const std::string& fpath)
                 in.read(reinterpret_cast<char*>(&cc), 4);
                 in.read(reinterpret_cast<char*>(&mo), 4);
                 in.read(reinterpret_cast<char*>(&co), 4);
+                if (!in.good() || mc == 0 || mo == 0 || mc > 500000000
+                    || mo > 500000000) {
+                    throw std::runtime_error("Corrupt .way file: invalid sizes");
+                }
                 std::vector<uint8_t> model_z(mc);
                 in.read(reinterpret_cast<char*>(model_z.data()), mc);
                 //  Decompress model.
                 std::vector<uint8_t> model_raw(mo);
                 uLongf out_len = mo;
-                uncompress(model_raw.data(), &out_len, model_z.data(), mc);
-                tmp.replaceWithData(model_raw.data(), mo);
+                int zr = uncompress(model_raw.data(), &out_len,
+                                    model_z.data(), mc);
+                if (zr != Z_OK) {
+                    throw std::runtime_error(
+                            "Corrupt .way file: decompression failed (zlib error "
+                            + std::to_string(zr) + ")");
+                }
+                tmp.replaceWithData(model_raw.data(), out_len);
                 way_tmp_model_path_ = tmp.getFullPathName().toStdString();
                 return way_tmp_model_path_;
             } else if (mag == "WAY1") {
