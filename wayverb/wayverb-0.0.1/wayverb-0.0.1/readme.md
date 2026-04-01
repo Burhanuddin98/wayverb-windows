@@ -1,13 +1,17 @@
 # Wayverb v1.2 — Windows Room Acoustics Simulator
 
+<p align="center">
+  <img src="wayverb/docs/screenshots/00_logo.png" width="200" alt="Wayverb logo">
+</p>
+
+<p align="center">
+  <a href="https://github.com/Burhanuddin98/wayverb-windows/releases/tag/v1.2"><img src="https://img.shields.io/badge/Download-Wayverb%20v1.2%20for%20Windows-7c3aed?style=for-the-badge&logo=windows" alt="Download"></a>
+</p>
+
 > **Hybrid waveguide + ray-tracing room acoustic simulator with GPU acceleration.**
 > Based on [Wayverb by Reuben Thomas](https://github.com/reuk/wayverb) (originally macOS-only). This fork ports it to **Windows 11** and rewrites the physics engine.
 >
 > **[v1.0](https://github.com/Burhanuddin98/wayverb-windows/tree/v1.0)** — original Windows port | **v1.2** (this branch) — rewritten physics engine
-
-<p align="center">
-  <img src="wayverb/docs/screenshots/00_logo.png" width="200" alt="Wayverb logo">
-</p>
 
 ---
 
