@@ -267,6 +267,6 @@ wayverb-windows/
 
 Original Wayverb library by Reuben Thomas. See `wayverb/wayverb-0.0.1/wayverb-0.0.1/LICENSE`.
 
-Windows port, physics rewrite, and v2.0 GUI overhaul by Burhanuddin Sakaliwala.
+Windows port, physics rewrite, and v2.0 GUI overhaul by Burhanuddin Sakarwala.
 
 **Software is provided "as is", without warranty of any kind.**
