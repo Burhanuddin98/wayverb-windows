@@ -15,11 +15,11 @@
 
 ---
 
-## What's New in v1.2 — Physics Engine Rewrite
+## What's New in v2.0
 
-Version 1.2 is a complete rewrite of the acoustic simulation core. Seven structural problems in the original engine have been fixed:
+Version 2.0 is a complete rewrite of the acoustic simulation core and a major GUI overhaul. Seven structural problems in the original engine have been fixed:
 
-| Change | Before (v1.1) | After (v1.2) |
+| Change | Before (v1.0) | After (v2.0) |
 |--------|--------------|--------------|
 | **FDTD stencil** | 7-point rectilinear (40% Nyquist, anisotropic) | IWB 19-point (90% Nyquist, isotropic) |
 | **Boundary absorption** | 5% minimum floor (glass/marble impossible) | No floor; 0.9999 numerical damping + stability margin |
@@ -209,7 +209,7 @@ flowchart TD
     style G fill:#4a0e8f,stroke:#7c3aed,color:#fff
 ```
 
-### v1.2 Physics Improvements in Detail
+### v2.0 Physics Improvements in Detail
 
 **IWB 19-Point Stencil** — The waveguide now uses 6 face-adjacent + 12 edge-diagonal neighbors with optimized weights (Kowalczyk & van Walstijn, 2011). This eliminates direction-dependent phase velocity error, making room modes accurate in all directions up to ~90% of the waveguide Nyquist frequency.
 
@@ -267,6 +267,6 @@ wayverb-windows/
 
 Original Wayverb library by Reuben Thomas. See `wayverb/wayverb-0.0.1/wayverb-0.0.1/LICENSE`.
 
-Windows port and v1.2 physics rewrite by Burhanuddin Sakaliwala.
+Windows port, physics rewrite, and v2.0 GUI overhaul by Burhanuddin Sakaliwala.
 
 **Software is provided "as is", without warranty of any kind.**
