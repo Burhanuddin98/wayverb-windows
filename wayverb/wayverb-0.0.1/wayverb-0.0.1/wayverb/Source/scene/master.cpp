@@ -578,21 +578,21 @@ public:
     ~impl() noexcept { stopTimer(); }
 
     void timerCallback() override {
-        // Refresh sources and receivers in the 3D view.
-        {
-            auto& src = *model_.project.persistent.sources();
-            auto copy = src;
-            view_.high_priority_command([r = std::move(copy)](auto& renderer) {
+        try {
+            auto* src_ptr = model_.project.persistent.sources().get();
+            auto* rcv_ptr = model_.project.persistent.receivers().get();
+            if (!src_ptr || !rcv_ptr) return;
+
+            auto src_copy = *src_ptr;
+            view_.high_priority_command([r = std::move(src_copy)](auto& renderer) {
                 renderer.set_sources(std::move(r));
             });
-        }
-        {
-            auto& rcv = *model_.project.persistent.receivers();
-            auto copy = rcv;
-            view_.high_priority_command([r = std::move(copy)](auto& renderer) {
+
+            auto rcv_copy = *rcv_ptr;
+            view_.high_priority_command([r = std::move(rcv_copy)](auto& renderer) {
                 renderer.set_receivers(std::move(r));
             });
-        }
+        } catch (...) {}
     }
 
     void resized() override {

@@ -63,10 +63,12 @@ project::project(const std::string& fpath)
             in.read(magic, 4);
             const std::string mag(magic, 4);
 
+            //  Unique temp name per load to avoid race conditions.
+            auto uid = juce::String(juce::Time::currentTimeMillis());
             auto tmp = juce::File::getSpecialLocation(
                     juce::File::tempDirectory)
-                    .getChildFile("wayverb_load_tmp.obj");
-            auto tmp_mtl = tmp.getSiblingFile("wayverb_load_tmp.mtl");
+                    .getChildFile("wayverb_" + uid + ".obj");
+            auto tmp_mtl = tmp.getSiblingFile("wayverb_" + uid + ".mtl");
 
             if (mag == "WAY3") {
                 //  Compressed with .mtl.
@@ -451,7 +453,8 @@ void project::save_to(const std::string& fpath) {
         //  Write geometry to a temp file, then read it back.
         auto tmp_dir = juce::File::getSpecialLocation(
                 juce::File::tempDirectory);
-        auto tmp_model = tmp_dir.getChildFile("wayverb_tmp_model.obj");
+        auto save_uid = juce::String(juce::Time::currentTimeMillis());
+        auto tmp_model = tmp_dir.getChildFile("wayverb_save_" + save_uid + ".obj");
         scene_data_.save(tmp_model.getFullPathName().toStdString());
 
         //  Read model bytes — also grab the .mtl file that Assimp produces
@@ -461,7 +464,7 @@ void project::save_to(const std::string& fpath) {
             throw std::runtime_error("Failed to write temp model file");
         }
         //  Read companion .mtl if it exists.
-        auto tmp_mtl = tmp_dir.getChildFile("wayverb_tmp_model.mtl");
+        auto tmp_mtl = tmp_dir.getChildFile("wayverb_save_" + save_uid + ".mtl");
         juce::MemoryBlock mtl_data;
         bool has_mtl = tmp_mtl.existsAsFile()
                     && tmp_mtl.loadFileAsData(mtl_data);

@@ -172,6 +172,7 @@ void main_window::getCommandInfo(CommandID command_id,
                            "Open an existing project",
                            "General",
                            0);
+            result.setActive(!model_.is_rendering());
             result.defaultKeypresses.add(
                     KeyPress('o', ModifierKeys::commandModifier, 0));
             break;
