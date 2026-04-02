@@ -1,17 +1,17 @@
-# Wayverb v1.2 — Windows Room Acoustics Simulator
+# Wayverb v2.0 — Windows Room Acoustics Simulator
 
 <p align="center">
   <img src="wayverb/docs/screenshots/00_logo.png" width="200" alt="Wayverb logo">
 </p>
 
 <p align="center">
-  <a href="https://github.com/Burhanuddin98/wayverb-windows/releases/tag/v1.2"><img src="https://img.shields.io/badge/Download-Wayverb%20v1.2%20for%20Windows-7c3aed?style=for-the-badge&logo=windows" alt="Download"></a>
+  <a href="https://github.com/Burhanuddin98/wayverb-windows/releases/tag/v2.0"><img src="https://img.shields.io/badge/Download-Wayverb%20v2.0%20for%20Windows-7c3aed?style=for-the-badge&logo=windows" alt="Download"></a>
 </p>
 
 > **Hybrid waveguide + ray-tracing room acoustic simulator with GPU acceleration.**
 > Based on [Wayverb by Reuben Thomas](https://github.com/reuk/wayverb) (originally macOS-only). This fork ports it to **Windows 11** and rewrites the physics engine.
 >
-> **[v1.0](https://github.com/Burhanuddin98/wayverb-windows/tree/v1.0)** — original Windows port | **v1.2** (this branch) — rewritten physics engine
+> **[v1.0](https://github.com/Burhanuddin98/wayverb-windows/tree/v1.0)** — original Windows port | **v2.0** (this branch) — rewritten physics + GUI overhaul
 
 ---
 
@@ -79,9 +79,9 @@ Receiver configuration with capsule setup. Each capsule can operate in **microph
 
 ## Quick Start — Download and Run
 
-**[Download Wayverb v1.2 for Windows (zip)](https://github.com/Burhanuddin98/wayverb-windows/releases/tag/v1.2)** — pre-built binary, no build tools needed.
+**[Download Wayverb v2.0 for Windows (zip)](https://github.com/Burhanuddin98/wayverb-windows/releases/tag/v2.0)** — pre-built binary, no build tools needed.
 
-1. Download and extract `wayverb-v1.2-win64.zip`
+1. Download and extract `wayverb-v2.0-win64.zip`
 2. Double-click **`wayverb.exe`**
 
 Requirements:
